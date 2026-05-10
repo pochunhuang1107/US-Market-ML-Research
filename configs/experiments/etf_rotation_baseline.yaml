@@ -1,24 +1,26 @@
 experiment:
   name: etf_rotation_baseline
-  description: Supervised regression baseline placeholder before neural network models.
+  description: Supervised regression baseline runner before neural network models.
 
 data:
   config: configs/data.yaml
 
-features:
-  config: configs/features.yaml
-
-labels:
+runner:
   target_col: excess_return_vs_spy_20d
-  benchmark_symbol: SPY
-  forward_horizons: [5, 10, 20]
-  excess_return_horizons: [20]
+  prediction_col: prediction
+  extra_exclude_feature_cols: []
+  dataset_config:
+    benchmark_symbol: SPY
+    forward_horizons: [5, 10, 20]
+    excess_return_horizons: [20]
+    rank_target_col: excess_return_vs_spy_20d
+    rank_col: rank_excess_return_vs_spy_20d
+    price_col: close
+  model_config:
+    model_type: ridge
+    alpha: 1.0
+    random_state: 42
 
 split:
   method: walk_forward
-  note: Apply walk-forward train/validation/test folds before fitting baselines.
-
-model:
-  model_type: ridge
-  alpha: 1.0
-  random_state: 42
+  note: Pass explicit WalkForwardFold objects to the baseline runner before fitting.

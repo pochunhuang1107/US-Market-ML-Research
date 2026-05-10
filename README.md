@@ -24,16 +24,14 @@ This bootstrap includes only the project foundation:
 - Packaging metadata for Python 3.11+.
 - Basic development tooling configuration.
 - A minimal import test.
+- A baseline supervised regression experiment runner for already-loaded OHLCV
+  DataFrames and explicit walk-forward folds.
 
 ## Not Included Yet
 
 The following are intentionally not implemented in this task:
 
 - S3 data loading.
-- Feature generation.
-- Label generation.
-- Walk-forward split logic.
-- Model training.
 - Neural network implementations.
 - Signal generation.
 - Backtesting engine.
@@ -62,9 +60,8 @@ python -m pip install -e ".[dev,nn]"
 2. Build leakage-safe historical feature tables.
 3. Generate forward-return labels for one or more horizons.
 4. Create walk-forward train, validation, and test splits.
-5. Train baseline models such as logistic regression, random forest, and gradient boosting style estimators.
+5. Run supervised baseline regression experiments with explicit walk-forward folds.
 6. Compare neural network candidates such as MLP, LSTM/GRU, 1D CNN, and TCN.
 7. Generate top-K ETF rotation signals.
 8. Backtest signals against SPY, QQQ, and equal-weight ETF baselines.
 9. Store reproducible artifacts under `artifacts/`.
-

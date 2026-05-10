@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+import pandas as pd
+import pytest
+
+from us_market_ml.data import SupervisedDatasetConfig
+from us_market_ml.experiments import (
+    BaselineExperimentConfig,
+    BaselineExperimentResult,
+    BaselineFoldResult,
+    run_baseline_experiment,
+    summarize_baseline_experiment,
+)
+from us_market_ml.models import BaselineModelConfig
+from us_market_ml.splits import WalkForwardFold
+
+
+def _synthetic_etf_ohlcv() -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    dates = pd.date_range("2020-01-01", periods=620, freq="D")
+    symbols = ("SPY", "QQQ", "TLT")
+
+    for symbol_index, symbol in enumerate(symbols):
+        base_price = 100.0 + symbol_index * 25.0
+        drift = 0.09 + symbol_index * 0.02
+        cycle = symbol_index + 2
+        for day_index, date in enumerate(dates):
+            close = base_price + day_index * drift + (day_index % 17) * cycle * 0.03
+            rows.append(
+                {
+                    "date": date,
+                    "symbol": symbol,
+                    "open": close - 0.25,
+                    "high": close + 0.75,
+                    "low": close - 0.8,
+                    "close": close,
+                    "volume": 1_000_000 + symbol_index * 80_000 + day_index * 1_500,
+                    "vwap": close - 0.05,
+                    "year": date.year,
+                    "month": date.month,
+                    "transactions": 10_000 + day_index,
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def _folds() -> list[WalkForwardFold]:
+    return [
+        WalkForwardFold(
+            name="fold_1",
+            train_start=pd.Timestamp("2020-01-01"),
+            train_end=pd.Timestamp("2020-12-31"),
+            validation_start=pd.Timestamp("2021-01-01"),
+            validation_end=pd.Timestamp("2021-03-31"),
+            test_start=pd.Timestamp("2021-04-01"),
+            test_end=pd.Timestamp("2021-06-30"),
+        ),
+        WalkForwardFold(
+            name="fold_2",
+            train_start=pd.Timestamp("2020-01-01"),
+            train_end=pd.Timestamp("2021-03-31"),
+            validation_start=pd.Timestamp("2021-04-01"),
+            validation_end=pd.Timestamp("2021-06-30"),
+            test_start=pd.Timestamp("2021-07-01"),
+            test_end=pd.Timestamp("2021-09-11"),
+        ),
+    ]
+
+
+def _config(
+    target_col: str = "excess_return_vs_spy_20d",
+    prediction_col: str = "prediction",
+    extra_exclude_feature_cols: set[str] | None = None,
+) -> BaselineExperimentConfig:
+    return BaselineExperimentConfig(
+        target_col=target_col,
+        model_config=BaselineModelConfig(model_type="ridge", alpha=0.1),
+        dataset_config=SupervisedDatasetConfig(),
+        prediction_col=prediction_col,
+        extra_exclude_feature_cols=extra_exclude_feature_cols,
+    )
+
+
+def test_run_baseline_experiment_returns_dataset_features_and_fold_results() -> None:
+    result = run_baseline_experiment(_synthetic_etf_ohlcv(), _folds(), _config())
+
+    assert isinstance(result, BaselineExperimentResult)
+    assert len(result.dataset) == 620 * 3
+    assert result.feature_cols
+    assert len(result.fold_results) == 2
+    assert all(isinstance(fold_result, BaselineFoldResult) for fold_result in result.fold_results)
+
+
+def test_fold_result_contains_train_validation_and_test_predictions() -> None:
+    result = run_baseline_experiment(_synthetic_etf_ohlcv(), _folds()[:1], _config())
+    fold_result = result.fold_results[0]
+
+    assert fold_result.fold_name == "fold_1"
+    assert not fold_result.train_predictions.empty
+    assert not fold_result.validation_predictions.empty
+    assert not fold_result.test_predictions.empty
+
+
+def test_prediction_outputs_preserve_split_row_counts() -> None:
+    raw_df = _synthetic_etf_ohlcv()
+    folds = _folds()
+    result = run_baseline_experiment(raw_df, folds, _config())
+    dataset = result.dataset
+
+    for fold, fold_result in zip(folds, result.fold_results, strict=True):
+        train_df, validation_df, test_df = fold.split(dataset)
+        assert len(fold_result.train_predictions) == len(train_df)
+        assert len(fold_result.validation_predictions) == len(validation_df)
+        assert len(fold_result.test_predictions) == len(test_df)
+
+
+def test_prediction_columns_are_present_on_all_split_outputs() -> None:
+    config = _config(prediction_col="baseline_score")
+
+    result = run_baseline_experiment(_synthetic_etf_ohlcv(), _folds()[:1], config)
+    fold_result = result.fold_results[0]
+
+    assert "baseline_score" in fold_result.train_predictions.columns
+    assert "baseline_score" in fold_result.validation_predictions.columns
+    assert "baseline_score" in fold_result.test_predictions.columns
+
+
+def test_summary_output_has_one_row_per_fold() -> None:
+    result = run_baseline_experiment(_synthetic_etf_ohlcv(), _folds(), _config())
+
+    summary = summarize_baseline_experiment(result)
+
+    assert len(summary) == len(result.fold_results)
+    assert summary["fold_name"].tolist() == ["fold_1", "fold_2"]
+    assert {
+        "model_type",
+        "target_col",
+        "train_rows",
+        "validation_rows",
+        "train_mae",
+        "train_rmse",
+        "train_r2",
+        "validation_mae",
+        "validation_rmse",
+        "validation_r2",
+    }.issubset(summary.columns)
+
+
+def test_empty_folds_raise_value_error() -> None:
+    with pytest.raises(ValueError, match="At least one walk-forward fold"):
+        run_baseline_experiment(_synthetic_etf_ohlcv(), [], _config())
+
+
+def test_missing_target_col_raises_value_error() -> None:
+    config = _config(target_col="missing_target")
+
+    with pytest.raises(ValueError, match="missing_target"):
+        run_baseline_experiment(_synthetic_etf_ohlcv(), _folds()[:1], config)
+
+
+def test_no_usable_features_raise_value_error() -> None:
+    config = _config(
+        extra_exclude_feature_cols={
+            "return_1d",
+            "return_5d",
+            "return_10d",
+            "return_20d",
+            "return_60d",
+            "close_to_sma_20",
+            "close_to_sma_50",
+            "close_to_sma_200",
+            "realized_vol_10d",
+            "realized_vol_20d",
+            "realized_vol_60d",
+            "rsi_14",
+            "macd_line",
+            "macd_signal",
+            "macd_histogram",
+            "volume_zscore_20d",
+            "vwap_gap",
+            "qqq_spy_return_ratio_20d",
+            "tlt_spy_return_ratio_20d",
+        }
+    )
+
+    with pytest.raises(ValueError, match="No usable feature columns"):
+        run_baseline_experiment(_synthetic_etf_ohlcv(), _folds()[:1], config)
+
+
+def test_raw_df_is_not_mutated() -> None:
+    raw_df = _synthetic_etf_ohlcv()
+    original = raw_df.copy(deep=True)
+
+    run_baseline_experiment(raw_df, _folds()[:1], _config())
+
+    pd.testing.assert_frame_equal(raw_df, original)
