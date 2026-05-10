@@ -62,6 +62,31 @@ The local reader validates required OHLCV columns, parses `date`, sorts by
 `month`, and `transactions`. It does not read S3, build features or labels,
 write artifacts, or mutate source files.
 
+## Baseline Smoke CLI
+
+Install the package in editable mode, then run the local baseline end-to-end
+smoke test against a curated CSV/parquet file or directory:
+
+```bash
+python -m pip install -e ".[dev]"
+
+us-market-ml-baseline-smoke \
+  --data-path data/curated/etf_daily_ohlcv.parquet \
+  --train-start 2020-01-01 \
+  --train-end 2020-12-31 \
+  --validation-start 2021-01-01 \
+  --validation-end 2021-03-31 \
+  --test-start 2021-04-01 \
+  --test-end 2021-06-30 \
+  --top-k 3
+```
+
+This command is a deterministic real-data smoke test for the current research
+workflow. It reads local ETF OHLCV data, builds features and labels, fits the
+baseline model, generates top-K signals, and runs the simple lagged signal
+backtest. It is not production trading infrastructure and does not model
+transaction costs, slippage, or order execution.
+
 ## Local Setup
 
 ```bash

@@ -22,6 +22,9 @@ dependencies = [
   "PyYAML",
 ]
 
+[project.scripts]
+us-market-ml-baseline-smoke = "us_market_ml.cli.run_baseline_smoke:run_baseline_smoke_from_args"
+
 [project.optional-dependencies]
 dev = [
   "pytest",
@@ -50,4 +53,3 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.11"
 strict = true
 packages = ["us_market_ml"]
-
