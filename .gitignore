@@ -8,6 +8,7 @@ build/
 *.egg-info/
 artifacts/
 data/
+!src/us_market_ml/data/
+!src/us_market_ml/data/*.py
 .env
 .DS_Store
-
