@@ -22,6 +22,21 @@ local_reader:
     - volume
     - vwap
 
+s3_reader:
+  # Curated ETF daily parquet partitions from US-Market-Data are expected at:
+  # s3://{bucket}/{curated_prefix}/symbol={symbol}/year={year}/data.parquet
+  bucket: us-market-data-casper
+  curated_prefix: curated/etf_daily_prices
+  region_name: us-west-2
+  example_symbols:
+    - SPY
+    - QQQ
+    - IWM
+  example_years:
+    - 2022
+    - 2023
+    - 2024
+
 universe:
   name: core_etf_rotation
   symbols:

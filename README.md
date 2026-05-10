@@ -35,12 +35,13 @@ This bootstrap includes only the project foundation:
   prediction, top-K target weights, and lagged signal backtesting across
   walk-forward folds.
 - Local CSV/parquet readers for curated ETF daily OHLCV research exports.
+- Optional S3 parquet readers for curated ETF daily price partitions.
 
 ## Not Included Yet
 
 The following are intentionally not implemented in this task:
 
-- S3 data loading.
+- S3 writing or artifact publishing.
 - Neural network implementations.
 - Transaction-cost, slippage, and order-execution simulation.
 - Live trading or brokerage integration.
@@ -61,6 +62,41 @@ The local reader validates required OHLCV columns, parses `date`, sorts by
 `symbol` and `date`, and preserves extra curated columns such as `year`,
 `month`, and `transactions`. It does not read S3, build features or labels,
 write artifacts, or mutate source files.
+
+## S3 Curated ETF Data Loading
+
+S3 loading is optional and uses the curated ETF parquet layout produced by
+`US-Market-Data`:
+
+```text
+curated/etf_daily_prices/symbol=SYMBOL/year=YYYY/data.parquet
+```
+
+Install AWS reader dependencies only when you need them:
+
+```bash
+python -m pip install -e ".[dev,aws]"
+```
+
+```python
+from us_market_ml.data import S3MarketDataConfig, read_s3_curated_etf_data
+
+config = S3MarketDataConfig(
+    bucket="us-market-data-casper",
+    region_name="us-west-2",
+)
+
+ohlcv = read_s3_curated_etf_data(
+    symbols=["SPY", "QQQ", "IWM"],
+    years=[2022, 2023, 2024],
+    config=config,
+)
+```
+
+The S3 reader validates required OHLCV columns, parses `date`, sorts by
+`symbol` and `date`, and preserves extra curated columns. Missing symbol/year
+partitions are skipped unless all requested partitions are missing. Feature
+generation, labels, modeling, and artifact writing remain downstream concerns.
 
 ## Baseline Smoke CLI
 
@@ -105,7 +141,7 @@ python -m pip install -e ".[dev,nn]"
 
 ## Expected Future Workflow
 
-1. Load curated ETF daily parquet/CSV data from local research exports, with S3 loading as a future extension.
+1. Load curated ETF daily parquet/CSV data from local research exports or curated S3 partitions.
 2. Build leakage-safe historical feature tables.
 3. Generate forward-return labels for one or more horizons.
 4. Create walk-forward train, validation, and test splits.
