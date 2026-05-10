@@ -34,6 +34,7 @@ This bootstrap includes only the project foundation:
 - A first end-to-end baseline ETF rotation workflow that composes model
   prediction, top-K target weights, and lagged signal backtesting across
   walk-forward folds.
+- Local CSV/parquet readers for curated ETF daily OHLCV research exports.
 
 ## Not Included Yet
 
@@ -44,6 +45,22 @@ The following are intentionally not implemented in this task:
 - Transaction-cost, slippage, and order-execution simulation.
 - Live trading or brokerage integration.
 - Large notebooks or exploratory artifacts.
+
+## Local Data Loading
+
+Local research exports can be loaded from a single CSV/parquet file or a
+directory of files:
+
+```python
+from us_market_ml.data import read_local_market_data
+
+ohlcv = read_local_market_data("data/curated/etf_daily_ohlcv")
+```
+
+The local reader validates required OHLCV columns, parses `date`, sorts by
+`symbol` and `date`, and preserves extra curated columns such as `year`,
+`month`, and `transactions`. It does not read S3, build features or labels,
+write artifacts, or mutate source files.
 
 ## Local Setup
 
@@ -63,7 +80,7 @@ python -m pip install -e ".[dev,nn]"
 
 ## Expected Future Workflow
 
-1. Load curated ETF daily parquet data from the upstream data repository's S3 outputs.
+1. Load curated ETF daily parquet/CSV data from local research exports, with S3 loading as a future extension.
 2. Build leakage-safe historical feature tables.
 3. Generate forward-return labels for one or more horizons.
 4. Create walk-forward train, validation, and test splits.
