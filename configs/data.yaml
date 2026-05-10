@@ -5,6 +5,23 @@ source:
   storage: s3
   curated_dataset: etf_daily_ohlcv
 
+local_reader:
+  # Local path for research/dev exports from US-Market-Data. File paths may
+  # point to a single CSV/parquet file or a directory searched recursively.
+  local_data_path: data/curated/etf_daily_ohlcv
+  supported_formats:
+    - parquet
+    - csv
+  required_columns:
+    - date
+    - symbol
+    - open
+    - high
+    - low
+    - close
+    - volume
+    - vwap
+
 universe:
   name: core_etf_rotation
   symbols:
@@ -20,4 +37,3 @@ universe:
 calendar:
   frequency: daily
   timezone: America/New_York
-
