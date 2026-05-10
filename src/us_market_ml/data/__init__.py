@@ -23,6 +23,7 @@ from us_market_ml.data.s3_reader import (
     build_s3_storage_options,
     read_s3_curated_etf_data,
     read_s3_parquet_files,
+    read_s3_parquet_object,
 )
 
 __all__ = [
@@ -42,6 +43,7 @@ __all__ = [
     "read_local_market_data",
     "read_parquet_files",
     "read_s3_curated_etf_data",
+    "read_s3_parquet_object",
     "read_s3_parquet_files",
     "validate_market_data_columns",
 ]

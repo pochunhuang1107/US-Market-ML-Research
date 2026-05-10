@@ -16,6 +16,9 @@ from __future__ import annotations
 import importlib
 from collections.abc import Sequence
 from dataclasses import dataclass
+from io import BytesIO
+from typing import Any
+from urllib.parse import urlparse
 
 import pandas as pd
 
@@ -28,9 +31,9 @@ class S3MarketDataConfig:
 
     The defaults match the upstream curated ETF layout:
     ``curated/etf_daily_prices/symbol=SYMBOL/year=YYYY/data.parquet``.
-    ``boto3`` and ``s3fs`` are optional project dependencies and are imported
-    only by read functions. Extra curated columns such as ``year``, ``month``,
-    and ``transactions`` are preserved for downstream research use.
+    ``boto3`` is an optional project dependency and is imported only by read
+    functions. Extra curated columns such as ``year``, ``month``, and
+    ``transactions`` are preserved for downstream research use.
     """
 
     bucket: str
@@ -76,11 +79,11 @@ def build_curated_etf_s3_uri(
 
 
 def build_s3_storage_options(config: S3MarketDataConfig) -> dict[str, object] | None:
-    """Build minimal ``s3fs`` storage options for pandas parquet reads.
+    """Build legacy ``s3fs`` storage options for compatibility.
 
-    ``aws_profile`` is passed as ``profile`` when configured. ``region_name``
-    is passed through ``client_kwargs`` because that is the option shape used
-    by ``s3fs.S3FileSystem``.
+    S3 parquet reads no longer use ``s3fs`` because path-based parquet reads
+    can trigger Hive partition inference. This helper remains part of the
+    public API for callers that may still depend on it.
     """
 
     storage_options: dict[str, object] = {}
@@ -136,14 +139,11 @@ def read_s3_parquet_files(
     if not uri_values:
         raise ValueError("At least one S3 parquet URI is required.")
 
-    _ensure_optional_aws_dependencies_available()
-    storage_options = build_s3_storage_options(config)
-
     frames: list[pd.DataFrame] = []
     missing_uris: list[str] = []
     for uri in uri_values:
         try:
-            frames.append(pd.read_parquet(uri, storage_options=storage_options))
+            frames.append(read_s3_parquet_object(uri, config))
         except FileNotFoundError:
             missing_uris.append(uri)
 
@@ -159,23 +159,73 @@ def read_s3_parquet_files(
     return normalize_market_data_frame(pd.concat(frames, ignore_index=True), local_config)
 
 
-def _ensure_optional_aws_dependencies_available() -> None:
-    """Raise a clear error when optional AWS read dependencies are missing."""
+def read_s3_parquet_object(
+    s3_uri: str,
+    config: S3MarketDataConfig,
+) -> pd.DataFrame:
+    """Read one S3 parquet object through boto3 and return its raw DataFrame.
 
-    missing_packages: list[str] = []
-    for package_name in ("boto3", "s3fs"):
-        try:
-            importlib.import_module(package_name)
-        except ImportError:
-            missing_packages.append(package_name)
+    The object is fetched as bytes and handed to pandas through ``BytesIO`` so
+    parquet loading sees only file contents, not the Hive-like S3 key path.
+    """
 
-    if missing_packages:
-        missing = ", ".join(missing_packages)
+    bucket, key = _parse_s3_uri(s3_uri)
+    boto3, client_error = _load_optional_aws_modules()
+
+    session_kwargs: dict[str, str] = {}
+    if config.aws_profile is not None:
+        session_kwargs["profile_name"] = config.aws_profile
+    if config.region_name is not None:
+        session_kwargs["region_name"] = config.region_name
+
+    session = boto3.Session(**session_kwargs)
+    s3_client = session.client("s3")
+    try:
+        response = s3_client.get_object(Bucket=bucket, Key=key)
+    except client_error as exc:
+        if _is_missing_s3_object_error(exc):
+            raise FileNotFoundError(f"S3 parquet object does not exist: {s3_uri}") from exc
+        raise
+
+    body = response["Body"]
+    data = body.read()
+    return pd.read_parquet(BytesIO(data))
+
+
+def _parse_s3_uri(s3_uri: str) -> tuple[str, str]:
+    parsed = urlparse(s3_uri)
+    if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.lstrip("/"):
+        raise ValueError(f"Expected an S3 URI like s3://bucket/key, got: {s3_uri}")
+    return parsed.netloc, parsed.path.lstrip("/")
+
+
+def _load_optional_aws_modules() -> tuple[Any, type[Exception]]:
+    """Return lazily imported AWS modules or raise a clear install error."""
+
+    try:
+        boto3 = importlib.import_module("boto3")
+        exceptions = importlib.import_module("botocore.exceptions")
+    except ImportError as exc:
         raise ImportError(
-            "S3 market data readers require optional AWS dependencies "
-            f"({missing}). Install them with: python -m pip install -e \".[aws]\" "
+            "S3 market data readers require optional AWS dependencies. "
+            "Install them with: python -m pip install -e \".[aws]\" "
             "or python -m pip install -e \".[dev,aws]\"."
-        )
+        ) from exc
+
+    return boto3, exceptions.ClientError
+
+
+def _is_missing_s3_object_error(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return False
+
+    error = response.get("Error")
+    if not isinstance(error, dict):
+        return False
+
+    code = error.get("Code")
+    return str(code) in {"NoSuchKey", "404", "NotFound", "NoSuchBucket"}
 
 
 __all__ = [
@@ -184,5 +234,6 @@ __all__ = [
     "build_curated_etf_s3_uri",
     "build_s3_storage_options",
     "read_s3_curated_etf_data",
+    "read_s3_parquet_object",
     "read_s3_parquet_files",
 ]

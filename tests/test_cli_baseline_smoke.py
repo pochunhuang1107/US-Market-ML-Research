@@ -5,7 +5,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from us_market_ml.cli.run_baseline_smoke import run_baseline_smoke_from_args
+from us_market_ml.cli import run_baseline_smoke as baseline_smoke_cli
+from us_market_ml.cli.run_baseline_smoke import (
+    parse_comma_separated_symbols,
+    parse_comma_separated_years,
+    run_baseline_smoke_from_args,
+)
 
 
 def _synthetic_etf_ohlcv() -> pd.DataFrame:
@@ -42,10 +47,8 @@ def _write_synthetic_csv(path: Path) -> None:
     _synthetic_etf_ohlcv().to_csv(path, index=False)
 
 
-def _smoke_args(path: Path) -> list[str]:
+def _walk_forward_args() -> list[str]:
     return [
-        "--data-path",
-        str(path),
         "--train-start",
         "2020-01-01",
         "--train-end",
@@ -65,6 +68,31 @@ def _smoke_args(path: Path) -> list[str]:
     ]
 
 
+def _smoke_args(path: Path) -> list[str]:
+    return [
+        "--data-path",
+        str(path),
+        *_walk_forward_args(),
+    ]
+
+
+def _s3_smoke_args() -> list[str]:
+    return [
+        "--s3-bucket",
+        "example-bucket",
+        "--symbols",
+        "spy, qqq, tlt",
+        "--years",
+        "2020,2021",
+        *_walk_forward_args(),
+    ]
+
+
+def _without_option(args: list[str], option: str) -> list[str]:
+    option_index = args.index(option)
+    return args[:option_index] + args[option_index + 2 :]
+
+
 def test_run_baseline_smoke_from_args_prints_summary(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -76,9 +104,47 @@ def test_run_baseline_smoke_from_args_prints_summary(
 
     captured = capsys.readouterr()
     assert return_code == 0
+    assert "input source: local" in captured.out
+    assert f"data path: {data_path}" in captured.out
     assert "loaded row count: 1860" in captured.out
     assert "symbol count: 3" in captured.out
     assert "feature count:" in captured.out
+    assert "smoke_fold" in captured.out
+
+
+def test_run_baseline_smoke_s3_mode_prints_source_and_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_read_s3_curated_etf_data(
+        symbols: list[str],
+        years: list[int],
+        config: object,
+    ) -> pd.DataFrame:
+        assert symbols == ["SPY", "QQQ", "TLT"]
+        assert years == [2020, 2021]
+        assert config == baseline_smoke_cli.S3MarketDataConfig(
+            bucket="example-bucket",
+            curated_prefix="curated/etf_daily_prices",
+            region_name="us-west-2",
+        )
+        return _synthetic_etf_ohlcv()
+
+    monkeypatch.setattr(
+        baseline_smoke_cli,
+        "read_s3_curated_etf_data",
+        fake_read_s3_curated_etf_data,
+    )
+
+    return_code = run_baseline_smoke_from_args(_s3_smoke_args())
+
+    captured = capsys.readouterr()
+    assert return_code == 0
+    assert "input source: s3" in captured.out
+    assert "s3 bucket: example-bucket" in captured.out
+    assert "s3 curated prefix: curated/etf_daily_prices" in captured.out
+    assert "symbols: SPY, QQQ, TLT" in captured.out
+    assert "years: 2020, 2021" in captured.out
     assert "smoke_fold" in captured.out
 
 
@@ -99,3 +165,43 @@ def test_run_baseline_smoke_does_not_write_artifacts(tmp_path: Path) -> None:
     after_paths = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
     assert return_code == 0
     assert after_paths == before_paths
+
+
+def test_run_baseline_smoke_with_local_and_s3_inputs_fails(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        run_baseline_smoke_from_args(
+            [
+                "--data-path",
+                str(tmp_path / "etf_daily.csv"),
+                "--s3-bucket",
+                "example-bucket",
+                "--symbols",
+                "SPY",
+                "--years",
+                "2020",
+                *_walk_forward_args(),
+            ]
+        )
+
+
+def test_run_baseline_smoke_without_local_or_s3_input_fails() -> None:
+    with pytest.raises(SystemExit):
+        run_baseline_smoke_from_args(_walk_forward_args())
+
+
+def test_run_baseline_smoke_s3_mode_without_symbols_fails() -> None:
+    with pytest.raises(SystemExit):
+        run_baseline_smoke_from_args(_without_option(_s3_smoke_args(), "--symbols"))
+
+
+def test_run_baseline_smoke_s3_mode_without_years_fails() -> None:
+    with pytest.raises(SystemExit):
+        run_baseline_smoke_from_args(_without_option(_s3_smoke_args(), "--years"))
+
+
+def test_parse_comma_separated_symbols_normalizes_values() -> None:
+    assert parse_comma_separated_symbols(" spy, qqq ") == ["SPY", "QQQ"]
+
+
+def test_parse_comma_separated_years_converts_values() -> None:
+    assert parse_comma_separated_years("2023,2024") == [2023, 2024]
