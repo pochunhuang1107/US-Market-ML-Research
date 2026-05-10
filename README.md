@@ -28,6 +28,9 @@ This bootstrap includes only the project foundation:
   DataFrames and explicit walk-forward folds.
 - Deterministic top-K equal-weight signal generation from model prediction
   scores, preserving experiment output rows for future backtesting.
+- A simple deterministic signal backtester that lags target weights by symbol
+  and converts ETF close prices into daily portfolio returns and an equity
+  curve for research use.
 
 ## Not Included Yet
 
@@ -35,8 +38,7 @@ The following are intentionally not implemented in this task:
 
 - S3 data loading.
 - Neural network implementations.
-- Portfolio backtesting engine.
-- Transaction-cost, return, and equity-curve simulation.
+- Transaction-cost, slippage, and order-execution simulation.
 - Live trading or brokerage integration.
 - Large notebooks or exploratory artifacts.
 
