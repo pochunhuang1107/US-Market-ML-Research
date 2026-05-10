@@ -31,6 +31,9 @@ This bootstrap includes only the project foundation:
 - A simple deterministic signal backtester that lags target weights by symbol
   and converts ETF close prices into daily portfolio returns and an equity
   curve for research use.
+- A first end-to-end baseline ETF rotation workflow that composes model
+  prediction, top-K target weights, and lagged signal backtesting across
+  walk-forward folds.
 
 ## Not Included Yet
 
@@ -65,7 +68,8 @@ python -m pip install -e ".[dev,nn]"
 3. Generate forward-return labels for one or more horizons.
 4. Create walk-forward train, validation, and test splits.
 5. Run supervised baseline regression experiments with explicit walk-forward folds.
-6. Compare neural network candidates such as MLP, LSTM/GRU, 1D CNN, and TCN.
-7. Generate top-K ETF rotation signals from prediction scores.
+6. Run the end-to-end baseline workflow to generate top-K ETF rotation signals
+   and backtest lagged target weights.
+7. Compare neural network candidates such as MLP, LSTM/GRU, 1D CNN, and TCN.
 8. Backtest signals against SPY, QQQ, and equal-weight ETF baselines.
 9. Store reproducible artifacts under `artifacts/`.
