@@ -26,6 +26,8 @@ This bootstrap includes only the project foundation:
 - A minimal import test.
 - A baseline supervised regression experiment runner for already-loaded OHLCV
   DataFrames and explicit walk-forward folds.
+- Deterministic top-K equal-weight signal generation from model prediction
+  scores, preserving experiment output rows for future backtesting.
 
 ## Not Included Yet
 
@@ -33,8 +35,8 @@ The following are intentionally not implemented in this task:
 
 - S3 data loading.
 - Neural network implementations.
-- Signal generation.
-- Backtesting engine.
+- Portfolio backtesting engine.
+- Transaction-cost, return, and equity-curve simulation.
 - Live trading or brokerage integration.
 - Large notebooks or exploratory artifacts.
 
@@ -62,6 +64,6 @@ python -m pip install -e ".[dev,nn]"
 4. Create walk-forward train, validation, and test splits.
 5. Run supervised baseline regression experiments with explicit walk-forward folds.
 6. Compare neural network candidates such as MLP, LSTM/GRU, 1D CNN, and TCN.
-7. Generate top-K ETF rotation signals.
+7. Generate top-K ETF rotation signals from prediction scores.
 8. Backtest signals against SPY, QQQ, and equal-weight ETF baselines.
 9. Store reproducible artifacts under `artifacts/`.
