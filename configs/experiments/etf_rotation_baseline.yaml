@@ -21,6 +21,12 @@ runner:
     alpha: 1.0
     random_state: 42
 
+e2e:
+  top_k: 3
+  initial_equity: 1.0
+  prediction_col: prediction
+  target_col: excess_return_vs_spy_20d
+
 split:
   method: walk_forward
   note: Pass explicit WalkForwardFold objects to the baseline runner before fitting.

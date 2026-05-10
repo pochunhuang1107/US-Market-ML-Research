@@ -4,7 +4,7 @@ This module connects supervised dataset construction, walk-forward splitting,
 classical baseline regression fitting, and prediction output. It is a
 supervised model experiment runner, not a trading strategy: generated
 predictions are model scores only, not buy/sell signals. Signal generation,
-portfolio construction, and backtesting are future tasks.
+portfolio construction, and backtesting belong to separate research layers.
 
 Walk-forward folds are required so training, validation, and test windows stay
 chronological and avoid leakage from future market rows into earlier model
@@ -38,8 +38,8 @@ class BaselineExperimentConfig:
 
     The selected target is a supervised label, and the resulting predictions
     are model scores only. They should not be interpreted as executable
-    buy/sell signals until a future signal-generation and backtesting layer is
-    added.
+    buy/sell signals without an explicit signal-generation and backtesting
+    layer.
     """
 
     target_col: str = "excess_return_vs_spy_20d"
@@ -156,7 +156,7 @@ def summarize_baseline_experiment(result: BaselineExperimentResult) -> pd.DataFr
 
     The summary describes model fitting quality only. It does not contain
     trading signals, portfolio returns, or backtest statistics; those belong to
-    future layers built on top of model-score predictions.
+    separate layers built on top of model-score predictions.
     """
 
     rows: list[dict[str, object]] = []
