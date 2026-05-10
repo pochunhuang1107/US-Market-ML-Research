@@ -1,0 +1,35 @@
+experiment:
+  name: etf_rotation_mlp
+  description: Placeholder MLP ETF rotation experiment to run after baseline validation.
+
+data:
+  config: configs/data.yaml
+
+features:
+  config: configs/features.yaml
+
+labels:
+  forward_return_horizon_days: 21
+  target: cross_sectional_forward_return_rank
+
+split:
+  method: walk_forward
+  train_years: 5
+  validation_months: 6
+  test_months: 6
+
+model:
+  type: mlp
+  hidden_layers: [128, 64]
+  dropout: 0.1
+  batch_size: 256
+  max_epochs: 100
+
+backtest:
+  top_k: 5
+  rebalance_frequency: monthly
+  benchmarks:
+    - SPY
+    - QQQ
+    - equal_weight_universe
+

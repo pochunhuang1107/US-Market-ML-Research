@@ -1,0 +1,23 @@
+# Data inputs are produced by the sibling US-Market-Data repository.
+source:
+  provider: us-market-data
+  format: parquet
+  storage: s3
+  curated_dataset: etf_daily_ohlcv
+
+universe:
+  name: core_etf_rotation
+  symbols:
+    - SPY
+    - QQQ
+    - IWM
+    - EFA
+    - EEM
+    - TLT
+    - GLD
+    - VNQ
+
+calendar:
+  frequency: daily
+  timezone: America/New_York
+

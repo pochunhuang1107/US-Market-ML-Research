@@ -1,0 +1,14 @@
+feature_set:
+  name: etf_rotation_history_v1
+  description: Leakage-safe historical price, volume, trend, volatility, and relative strength features.
+
+lookbacks:
+  returns: [1, 5, 10, 21, 63]
+  volatility: [21, 63]
+  moving_average: [21, 63, 126]
+
+rules:
+  use_only_information_available_at_close: true
+  shift_features_before_label_alignment: true
+  allow_cross_sectional_features: true
+
