@@ -33,7 +33,6 @@ dev = [
 ]
 aws = [
   "boto3",
-  "s3fs",
 ]
 nn = [
   "torch",

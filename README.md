@@ -72,7 +72,8 @@ S3 loading is optional and uses the curated ETF parquet layout produced by
 curated/etf_daily_prices/symbol=SYMBOL/year=YYYY/data.parquet
 ```
 
-Install AWS reader dependencies only when you need them:
+Install AWS reader dependencies only when you need them. The S3 reader uses
+`boto3` to fetch parquet object bytes directly:
 
 ```bash
 python -m pip install -e ".[dev,aws]"
@@ -100,8 +101,8 @@ generation, labels, modeling, and artifact writing remain downstream concerns.
 
 ## Baseline Smoke CLI
 
-Install the package in editable mode, then run the local baseline end-to-end
-smoke test against a curated CSV/parquet file or directory:
+Install the package in editable mode, then run the baseline end-to-end smoke
+test against either a local curated CSV/parquet file or directory:
 
 ```bash
 python -m pip install -e ".[dev]"
@@ -117,11 +118,34 @@ us-market-ml-baseline-smoke \
   --top-k 3
 ```
 
+To run the same smoke workflow directly from curated ETF parquet partitions in
+S3, install the optional AWS dependencies and provide a bucket, symbols, and
+years:
+
+```bash
+python -m pip install -e ".[dev,aws]"
+
+us-market-ml-baseline-smoke \
+  --s3-bucket us-market-data-casper \
+  --s3-curated-prefix curated/etf_daily_prices \
+  --symbols SPY,QQQ,TLT \
+  --years 2023,2024 \
+  --region-name us-west-2 \
+  --train-start 2023-01-01 \
+  --train-end 2023-12-31 \
+  --validation-start 2024-01-01 \
+  --validation-end 2024-03-31 \
+  --test-start 2024-04-01 \
+  --test-end 2024-06-30 \
+  --top-k 3
+```
+
 This command is a deterministic real-data smoke test for the current research
-workflow. It reads local ETF OHLCV data, builds features and labels, fits the
-baseline model, generates top-K signals, and runs the simple lagged signal
-backtest. It is not production trading infrastructure and does not model
-transaction costs, slippage, or order execution.
+workflow. It reads ETF OHLCV data from one selected input source, builds
+features and labels, fits the baseline model, generates top-K signals, and
+runs the simple lagged signal backtest. It is not production trading
+infrastructure and does not model transaction costs, slippage, or order
+execution.
 
 ## Local Setup
 
