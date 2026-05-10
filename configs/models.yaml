@@ -1,11 +1,18 @@
 baselines:
-  logistic_regression:
+  ridge:
     enabled: true
-    max_iter: 1000
+    model_type: ridge
+    alpha: 1.0
+    random_state: 42
+  linear_regression:
+    enabled: true
+    model_type: linear_regression
   random_forest:
     enabled: true
-    n_estimators: 300
+    model_type: random_forest
+    n_estimators: 100
     max_depth: null
+    random_state: 42
 
 neural_networks:
   mlp:
@@ -18,4 +25,3 @@ training_defaults:
   random_seed: 42
   metric: information_coefficient
   early_stopping: false
-

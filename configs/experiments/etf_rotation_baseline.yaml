@@ -1,6 +1,6 @@
 experiment:
   name: etf_rotation_baseline
-  description: Baseline ETF rotation experiment before neural network models.
+  description: Supervised regression baseline placeholder before neural network models.
 
 data:
   config: configs/data.yaml
@@ -9,25 +9,16 @@ features:
   config: configs/features.yaml
 
 labels:
-  forward_return_horizon_days: 21
-  target: cross_sectional_forward_return_rank
+  target_col: excess_return_vs_spy_20d
+  benchmark_symbol: SPY
+  forward_horizons: [5, 10, 20]
+  excess_return_horizons: [20]
 
 split:
   method: walk_forward
-  train_years: 5
-  validation_months: 6
-  test_months: 6
+  note: Apply walk-forward train/validation/test folds before fitting baselines.
 
-models:
-  include:
-    - logistic_regression
-    - random_forest
-
-backtest:
-  top_k: 5
-  rebalance_frequency: monthly
-  benchmarks:
-    - SPY
-    - QQQ
-    - equal_weight_universe
-
+model:
+  model_type: ridge
+  alpha: 1.0
+  random_state: 42
