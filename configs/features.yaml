@@ -3,12 +3,43 @@ feature_set:
   description: Leakage-safe historical price, volume, trend, volatility, and relative strength features.
 
 lookbacks:
-  returns: [1, 5, 10, 21, 63]
-  volatility: [21, 63]
-  moving_average: [21, 63, 126]
+  returns: [1, 5, 10, 20, 60]
+  volatility: [10, 20, 60]
+  moving_average: [20, 50, 200]
+  rsi: 14
+  volume_zscore: 20
 
 rules:
   use_only_information_available_at_close: true
   shift_features_before_label_alignment: true
   allow_cross_sectional_features: true
 
+features:
+  price:
+    - return_1d
+    - return_5d
+    - return_10d
+    - return_20d
+    - return_60d
+    - close_to_sma_20
+    - close_to_sma_50
+    - close_to_sma_200
+  volatility:
+    - realized_vol_10d
+    - realized_vol_20d
+    - realized_vol_60d
+  technical:
+    - rsi_14
+    - macd_line
+    - macd_signal
+    - macd_histogram
+  volume:
+    - volume_zscore_20d
+    - vwap_gap
+  cross_asset:
+    - qqq_spy_return_ratio_20d
+    - iwm_spy_return_ratio_20d
+    - tlt_spy_return_ratio_20d
+    - gld_spy_return_ratio_20d
+    - hyg_lqd_return_ratio_20d
+    - xlk_xlf_return_ratio_20d
