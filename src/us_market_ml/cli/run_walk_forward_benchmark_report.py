@@ -13,11 +13,16 @@ from us_market_ml.backtest import (
     SignalBacktestConfig,
     TopKSignalConfig,
     build_buy_and_hold_benchmark,
+    build_daily_selection_summary,
     build_equal_weight_benchmark,
+    build_position_contribution_frame,
+    build_selected_holdings_frame,
     combine_strategy_and_benchmarks,
     stitch_test_equity_curves,
     summarize_backtest,
     summarize_equity_series,
+    summarize_holdings,
+    summarize_position_contributions,
 )
 from us_market_ml.cli.run_benchmark_report import (
     parse_comma_separated_symbols,
@@ -108,6 +113,11 @@ def run_walk_forward_benchmark_report_from_args(argv: list[str] | None = None) -
     )
     metrics = summarize_equity_series(combined_equity)
     fold_summary = _build_fold_summary(result, folds)
+    selected_holdings = build_selected_holdings_frame(result.fold_results)
+    position_contributions = build_position_contribution_frame(result.fold_results)
+    holdings_summary = summarize_holdings(selected_holdings)
+    contribution_summary = summarize_position_contributions(position_contributions)
+    daily_selection_summary = build_daily_selection_summary(selected_holdings)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -115,9 +125,19 @@ def run_walk_forward_benchmark_report_from_args(argv: list[str] | None = None) -
     metrics_path = output_dir / f"{args.report_name}_metrics.csv"
     plot_path = output_dir / f"{args.report_name}_equity.png"
     fold_summary_path = output_dir / f"{args.report_name}_fold_summary.csv"
+    selected_holdings_path = output_dir / f"{args.report_name}_selected_holdings.csv"
+    position_contributions_path = output_dir / f"{args.report_name}_position_contributions.csv"
+    holdings_summary_path = output_dir / f"{args.report_name}_holdings_summary.csv"
+    contribution_summary_path = output_dir / f"{args.report_name}_contribution_summary.csv"
+    daily_selection_summary_path = output_dir / f"{args.report_name}_daily_selection_summary.csv"
     combined_equity.to_csv(combined_path, index=False)
     metrics.to_csv(metrics_path, index=False)
     fold_summary.to_csv(fold_summary_path, index=False)
+    selected_holdings.to_csv(selected_holdings_path, index=False)
+    position_contributions.to_csv(position_contributions_path, index=False)
+    holdings_summary.to_csv(holdings_summary_path, index=False)
+    contribution_summary.to_csv(contribution_summary_path, index=False)
+    daily_selection_summary.to_csv(daily_selection_summary_path, index=False)
     plot_equity_curves(
         combined_equity,
         plot_path,
@@ -131,6 +151,11 @@ def run_walk_forward_benchmark_report_from_args(argv: list[str] | None = None) -
     print(f"output metrics CSV: {metrics_path}")
     print(f"output equity PNG: {plot_path}")
     print(f"output fold summary CSV: {fold_summary_path}")
+    print(f"output selected holdings CSV: {selected_holdings_path}")
+    print(f"output position contributions CSV: {position_contributions_path}")
+    print(f"output holdings summary CSV: {holdings_summary_path}")
+    print(f"output contribution summary CSV: {contribution_summary_path}")
+    print(f"output daily selection summary CSV: {daily_selection_summary_path}")
     print()
     print(metrics.to_string(index=False))
 

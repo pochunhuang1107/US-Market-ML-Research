@@ -8,6 +8,13 @@ from us_market_ml.backtest.benchmark import (
     stitch_test_equity_curves,
     summarize_equity_series,
 )
+from us_market_ml.backtest.holdings_report import (
+    build_daily_selection_summary,
+    build_position_contribution_frame,
+    build_selected_holdings_frame,
+    summarize_holdings,
+    summarize_position_contributions,
+)
 from us_market_ml.backtest.signal_backtester import (
     SignalBacktestConfig,
     SignalBacktestResult,
@@ -28,13 +35,18 @@ __all__ = [
     "SignalBacktestResult",
     "TopKSignalConfig",
     "build_buy_and_hold_benchmark",
+    "build_daily_selection_summary",
     "build_equal_weight_benchmark",
+    "build_position_contribution_frame",
+    "build_selected_holdings_frame",
     "calculate_max_drawdown",
     "combine_strategy_and_benchmarks",
     "generate_top_k_signals",
     "run_signal_backtest",
     "summarize_backtest",
     "summarize_equity_series",
+    "summarize_holdings",
+    "summarize_position_contributions",
     "summarize_signals",
     "stitch_test_equity_curves",
     "validate_signal_weights",

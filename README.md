@@ -273,12 +273,21 @@ us-market-ml-walk-forward-benchmark-report \
 
 The command writes `{report_name}_combined_equity.csv`,
 `{report_name}_metrics.csv`, `{report_name}_equity.png`, and
-`{report_name}_fold_summary.csv`. Training history such as 2018 can be used as
-feature warmup and model fitting history, but it is not counted as plotted OOS
-performance unless it is inside a test fold. In the example above, the plotted
-out-of-sample period starts on 2022-01-01, the first test fold start date. This
-first version reads local cache files only and does not model transaction
-costs or slippage.
+`{report_name}_fold_summary.csv`. It also writes holdings and attribution CSVs:
+`{report_name}_selected_holdings.csv`,
+`{report_name}_position_contributions.csv`,
+`{report_name}_holdings_summary.csv`,
+`{report_name}_contribution_summary.csv`, and
+`{report_name}_daily_selection_summary.csv`. These files show what the MLP
+strategy selected during test folds and which lagged positions drove returns,
+helping identify whether outperformance came from a few ETFs or from broad
+rotation across the universe.
+
+Training history such as 2018 can be used as feature warmup and model fitting
+history, but it is not counted as plotted OOS performance unless it is inside a
+test fold. In the example above, the plotted out-of-sample period starts on
+2022-01-01, the first test fold start date. This first version reads local
+cache files only and does not model transaction costs or slippage.
 
 ## Structured Sweep Runner
 
