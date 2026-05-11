@@ -12,3 +12,7 @@ data/
 !src/us_market_ml/data/*.py
 .env
 .DS_Store
+
+# Local one-off experiment runner scripts
+scripts/run_*_sweep*.sh
+scripts/*_with_progress.sh
