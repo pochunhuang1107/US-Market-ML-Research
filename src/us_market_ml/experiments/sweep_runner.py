@@ -181,8 +181,7 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
         for path in (results_path, completed_path, failed_path):
             path.unlink(missing_ok=True)
 
-    if not results_path.exists():
-        pd.DataFrame(columns=RESULT_COLUMNS).to_csv(results_path, index=False)
+    _ensure_results_file(results_path)
     completed_path.touch(exist_ok=True)
     failed_path.touch(exist_ok=True)
 
@@ -414,10 +413,18 @@ def _to_walk_forward_fold(config: SweepFoldConfig) -> WalkForwardFold:
 
 
 def _append_results(path: Path, results: pd.DataFrame) -> None:
-    results.to_csv(path, mode="a", header=not path.exists(), index=False)
+    _ensure_results_file(path)
+    results.to_csv(path, mode="a", header=False, index=False)
+
+
+def _ensure_results_file(path: Path) -> None:
+    if not path.exists() or path.stat().st_size == 0:
+        pd.DataFrame(columns=RESULT_COLUMNS).to_csv(path, index=False)
 
 
 def _read_results(path: Path) -> pd.DataFrame:
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame(columns=RESULT_COLUMNS)
     return pd.read_csv(path)
 
 
