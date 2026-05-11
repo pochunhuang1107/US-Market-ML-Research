@@ -141,6 +141,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--max-epochs", type=int, default=100)
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument(
+        "--scale-target",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Standardize MLP targets using train-only target mean/std.",
+    )
     parser.add_argument("--target-col", default="excess_return_vs_spy_20d")
     parser.add_argument("--label-horizon-days", type=int, default=0)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
@@ -192,6 +198,7 @@ def _build_model_configs(args: argparse.Namespace) -> list[SweepModelConfig]:
                     max_epochs=args.max_epochs,
                     patience=args.patience,
                     random_state=seed,
+                    scale_target=args.scale_target,
                 )
             )
     return models

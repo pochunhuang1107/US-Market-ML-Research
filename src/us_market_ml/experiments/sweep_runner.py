@@ -44,6 +44,7 @@ RESULT_COLUMNS = [
     "model_type",
     "hidden_units",
     "dropout",
+    "scale_target",
     "learning_rate",
     "weight_decay",
     "batch_size",
@@ -156,7 +157,8 @@ def build_sweep_run_key(
         hidden_units = "x".join(str(unit) for unit in model.hidden_units)
         model_part = (
             f"mlp-hu-{hidden_units}-lr-{model.learning_rate:g}-"
-            f"dropout-{model.dropout:g}"
+            f"dropout-{model.dropout:g}-"
+            f"scaletarget-{str(model.scale_target).lower()}"
         )
 
     return "__".join(
@@ -251,6 +253,7 @@ def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:
         "hidden_units",
         "learning_rate",
         "dropout",
+        "scale_target",
         "avg_test_return",
         "avg_sharpe_like",
         "avg_max_drawdown",
@@ -263,6 +266,8 @@ def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:
     test_rows = results.loc[results["split"] == "test"].copy()
     if test_rows.empty:
         return pd.DataFrame(columns=summary_columns)
+    if "scale_target" not in test_rows.columns:
+        test_rows["scale_target"] = False
 
     group_cols = [
         "universe",
@@ -272,6 +277,7 @@ def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:
         "hidden_units",
         "learning_rate",
         "dropout",
+        "scale_target",
     ]
 
     grouped = (
@@ -317,6 +323,7 @@ def _run_one_configuration(
                 "model_type": summary_row["model_type"],
                 "hidden_units": _format_hidden_units(model),
                 "dropout": model.dropout if model.model_family == "mlp" else np.nan,
+                "scale_target": model.scale_target if model.model_family == "mlp" else False,
                 "learning_rate": model.learning_rate if model.model_family == "mlp" else np.nan,
                 "weight_decay": model.weight_decay if model.model_family == "mlp" else np.nan,
                 "batch_size": model.batch_size if model.model_family == "mlp" else np.nan,

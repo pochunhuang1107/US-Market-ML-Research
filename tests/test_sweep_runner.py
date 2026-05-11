@@ -15,7 +15,11 @@ from us_market_ml.experiments import (
     run_sweep,
     summarize_sweep_results,
 )
-from us_market_ml.experiments.sweep_runner import RESULT_COLUMNS
+from us_market_ml.experiments.sweep_runner import (
+    RESULT_COLUMNS,
+    _run_one_configuration,
+    _to_walk_forward_fold,
+)
 
 
 def _synthetic_etf_ohlcv() -> pd.DataFrame:
@@ -120,6 +124,19 @@ def test_build_sweep_run_key_is_deterministic_and_changes_with_hyperparameters(
         label_horizon_days=20,
     )
 
+    scaled_model = SweepModelConfig(
+        model_family="mlp",
+        hidden_units=(16,),
+        learning_rate=0.001,
+        dropout=0.1,
+        scale_target=True,
+    )
+    scaled_key = build_sweep_run_key(universe, fold, scaled_model, signal)
+    unscaled_key = build_sweep_run_key(universe, fold, model, signal)
+    assert scaled_key != unscaled_key
+    assert "scaletarget-true" in scaled_key
+    assert "scaletarget-false" in unscaled_key
+
 
 def test_run_sweep_runs_baseline_and_writes_results_and_completed_checkpoint(
     tmp_path: Path,
@@ -134,6 +151,7 @@ def test_run_sweep_runs_baseline_and_writes_results_and_completed_checkpoint(
     completed_path = tmp_path / "sweeps" / "sweep_completed_keys.txt"
     assert len(results) == 3
     assert results["label_horizon_days"].tolist() == [0, 0, 0]
+    assert results["scale_target"].tolist() == [False, False, False]
     assert results_path.exists()
     assert completed_path.exists()
     assert pd.read_csv(results_path)["split"].tolist() == ["train", "validation", "test"]
@@ -158,6 +176,61 @@ def test_run_sweep_result_rows_include_label_horizon_days(tmp_path: Path) -> Non
 
     assert "label_horizon_days" in results.columns
     assert results["label_horizon_days"].tolist() == [20, 20, 20]
+
+
+def test_run_one_configuration_result_rows_include_mlp_scale_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    universe = SweepUniverseConfig(name="core", data_path=tmp_path / "etf_daily.csv")
+    fold_config = _fold()
+    signal = SweepSignalConfig(top_k=2)
+    model = SweepModelConfig(model_family="mlp", hidden_units=(16,), scale_target=True)
+    config = SweepRunConfig(
+        universes=[universe],
+        folds=[fold_config],
+        models=[model],
+        signals=[signal],
+    )
+
+    def fake_run_mlp(
+        raw_df: pd.DataFrame,
+        fold: object,
+        model_config: SweepModelConfig,
+        signal_config: SweepSignalConfig,
+        run_config: SweepRunConfig,
+    ) -> pd.DataFrame:
+        assert model_config.scale_target is True
+        return pd.DataFrame(
+            [
+                {
+                    "split": "test",
+                    "model_type": "mlp",
+                    "target_col": run_config.target_col,
+                    "total_return": 0.1,
+                    "mean_daily_return": 0.001,
+                    "daily_volatility": 0.01,
+                    "sharpe_like": 1.0,
+                    "max_drawdown": -0.05,
+                    "final_equity": 1.1,
+                    "epochs_trained": 3,
+                }
+            ]
+        )
+
+    monkeypatch.setattr("us_market_ml.experiments.sweep_runner._run_mlp", fake_run_mlp)
+
+    rows = _run_one_configuration(
+        raw_df=pd.DataFrame(),
+        universe=universe,
+        fold=_to_walk_forward_fold(fold_config),
+        model=model,
+        signal=signal,
+        config=config,
+        run_key="run_1",
+    )
+
+    assert rows[0]["scale_target"] is True
 
 
 def test_run_sweep_appends_multiple_runs_without_duplicate_result_headers(
@@ -346,6 +419,50 @@ def test_summarize_sweep_results_groups_test_rows() -> None:
     assert row["avg_max_drawdown"] == pytest.approx(-0.075)
     assert row["positive_rate"] == pytest.approx(0.5)
     assert row["runs"] == 2
+    assert not bool(row["scale_target"])
+
+
+def test_summarize_sweep_results_groups_by_scale_target_for_mlp() -> None:
+    results = pd.DataFrame(
+        [
+            {
+                "run_key": "run_1",
+                "universe": "core",
+                "split": "test",
+                "model_family": "mlp",
+                "model_type": "mlp",
+                "top_k": 2,
+                "hidden_units": "16",
+                "learning_rate": 0.001,
+                "dropout": 0.0,
+                "scale_target": False,
+                "total_return": 0.1,
+                "sharpe_like": 1.0,
+                "max_drawdown": -0.05,
+            },
+            {
+                "run_key": "run_2",
+                "universe": "core",
+                "split": "test",
+                "model_family": "mlp",
+                "model_type": "mlp",
+                "top_k": 2,
+                "hidden_units": "16",
+                "learning_rate": 0.001,
+                "dropout": 0.0,
+                "scale_target": True,
+                "total_return": 0.2,
+                "sharpe_like": 2.0,
+                "max_drawdown": -0.04,
+            },
+        ]
+    )
+
+    summary = summarize_sweep_results(results)
+
+    assert "scale_target" in summary.columns
+    assert len(summary) == 2
+    assert set(summary["scale_target"].tolist()) == {False, True}
 
 
 def test_run_sweep_runs_tiny_mlp_when_torch_is_available(tmp_path: Path) -> None:
@@ -374,4 +491,5 @@ def test_run_sweep_runs_tiny_mlp_when_torch_is_available(tmp_path: Path) -> None
 
     assert len(results) == 3
     assert results["model_family"].tolist() == ["mlp", "mlp", "mlp"]
+    assert results["scale_target"].tolist() == [False, False, False]
     assert results["epochs_trained"].notna().all()
