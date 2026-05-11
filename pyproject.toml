@@ -20,10 +20,12 @@ dependencies = [
   "pydantic",
   "scikit-learn",
   "PyYAML",
+  "matplotlib",
 ]
 
 [project.scripts]
 us-market-ml-baseline-smoke = "us_market_ml.cli.run_baseline_smoke:run_baseline_smoke_from_args"
+us-market-ml-benchmark-report = "us_market_ml.cli.run_benchmark_report:run_benchmark_report_from_args"
 us-market-ml-mlp-smoke = "us_market_ml.cli.run_mlp_smoke:run_mlp_smoke_from_args"
 us-market-ml-sweep = "us_market_ml.cli.run_sweep:run_sweep_from_args"
 
