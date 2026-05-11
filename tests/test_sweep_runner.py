@@ -15,6 +15,7 @@ from us_market_ml.experiments import (
     run_sweep,
     summarize_sweep_results,
 )
+from us_market_ml.experiments.sweep_runner import RESULT_COLUMNS
 
 
 def _synthetic_etf_ohlcv() -> pd.DataFrame:
@@ -74,6 +75,11 @@ def _baseline_config(tmp_path: Path, data_path: Path, run_name: str = "sweep") -
     )
 
 
+def _header_count(path: Path) -> int:
+    header = ",".join(RESULT_COLUMNS)
+    return sum(line == header for line in path.read_text().splitlines())
+
+
 def test_build_sweep_run_key_is_deterministic_and_changes_with_hyperparameters(
     tmp_path: Path,
 ) -> None:
@@ -117,7 +123,32 @@ def test_run_sweep_runs_baseline_and_writes_results_and_completed_checkpoint(
     assert results_path.exists()
     assert completed_path.exists()
     assert pd.read_csv(results_path)["split"].tolist() == ["train", "validation", "test"]
+    assert _header_count(results_path) == 1
     assert len(completed_path.read_text().splitlines()) == 1
+
+
+def test_run_sweep_appends_multiple_runs_without_duplicate_result_headers(
+    tmp_path: Path,
+) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = SweepRunConfig(
+        universes=[SweepUniverseConfig(name="core", data_path=data_path)],
+        folds=[_fold()],
+        models=[SweepModelConfig(model_family="baseline", model_type="ridge")],
+        signals=[SweepSignalConfig(top_k=1), SweepSignalConfig(top_k=2)],
+        output_dir=tmp_path / "sweeps",
+        run_name="append_case",
+    )
+
+    results = run_sweep(config)
+
+    results_path = tmp_path / "sweeps" / "append_case_results.csv"
+    completed_path = tmp_path / "sweeps" / "append_case_completed_keys.txt"
+    assert len(results) == 6
+    assert len(pd.read_csv(results_path)) == 6
+    assert _header_count(results_path) == 1
+    assert len(completed_path.read_text().splitlines()) == 2
 
 
 def test_run_sweep_resume_skips_completed_runs(
@@ -140,10 +171,62 @@ def test_run_sweep_resume_skips_completed_runs(
     resumed_results = run_sweep(config)
 
     assert len(resumed_results) == len(first_results) == 3
+    assert _header_count(tmp_path / "sweeps" / "sweep_results.csv") == 1
     pd.testing.assert_frame_equal(
         resumed_results.reset_index(drop=True),
         pd.read_csv(tmp_path / "sweeps" / "sweep_results.csv").reset_index(drop=True),
     )
+
+
+def test_run_sweep_resume_handles_empty_existing_results_file(tmp_path: Path) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    output_dir = tmp_path / "sweeps"
+    output_dir.mkdir()
+    (output_dir / "empty_results.csv").touch()
+    config = _baseline_config(tmp_path, data_path, run_name="empty")
+
+    results = run_sweep(config)
+
+    results_path = output_dir / "empty_results.csv"
+    assert len(results) == 3
+    assert len(pd.read_csv(results_path)) == 3
+    assert _header_count(results_path) == 1
+
+
+def test_run_sweep_resume_false_resets_old_files_and_reruns_from_scratch(
+    tmp_path: Path,
+) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = _baseline_config(tmp_path, data_path, run_name="clean_start")
+    first_results = run_sweep(config)
+    output_dir = tmp_path / "sweeps"
+    failed_path = output_dir / "clean_start_failed_keys.txt"
+    failed_path.write_text("old_run\told error\n")
+
+    clean_config = SweepRunConfig(
+        universes=config.universes,
+        folds=config.folds,
+        models=config.models,
+        signals=config.signals,
+        target_col=config.target_col,
+        initial_equity=config.initial_equity,
+        prediction_col=config.prediction_col,
+        output_dir=config.output_dir,
+        run_name=config.run_name,
+        resume=False,
+    )
+
+    rerun_results = run_sweep(clean_config)
+
+    results_path = output_dir / "clean_start_results.csv"
+    completed_path = output_dir / "clean_start_completed_keys.txt"
+    assert len(rerun_results) == len(first_results) == 3
+    assert len(pd.read_csv(results_path)) == 3
+    assert _header_count(results_path) == 1
+    assert len(completed_path.read_text().splitlines()) == 1
+    assert failed_path.read_text() == ""
 
 
 def test_run_sweep_records_failed_run_and_continues(tmp_path: Path) -> None:
@@ -166,7 +249,11 @@ def test_run_sweep_records_failed_run_and_continues(tmp_path: Path) -> None:
     failed_path = tmp_path / "sweeps" / "failure_case_failed_keys.txt"
     assert len(results) == 3
     assert failed_path.exists()
-    assert "not_a_model" in failed_path.read_text()
+    failed_lines = failed_path.read_text().splitlines()
+    assert len(failed_lines) == 1
+    run_key, error = failed_lines[0].split("\t", maxsplit=1)
+    assert "not_a_model" in run_key
+    assert "ValueError:" in error
 
 
 def test_summarize_sweep_results_groups_test_rows() -> None:
