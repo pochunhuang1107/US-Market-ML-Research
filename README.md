@@ -39,6 +39,8 @@ This bootstrap includes only the project foundation:
 - An optional PyTorch tabular MLP regressor that fits supervised ETF feature
   datasets, optionally standardizes targets using train-only statistics, and
   preserves row alignment during prediction.
+- Static benchmark report utilities that compare MLP test-period strategy
+  equity against SPY, QQQ, and equal-weight universe benchmarks.
 
 ## Not Included Yet
 
@@ -201,6 +203,43 @@ does not write artifacts or model transaction costs, slippage, or order
 execution. MLP target scaling is optional through `MLPRegressorConfig`; when
 enabled, training uses train-only standardized targets while predictions and
 fit metrics stay in original return units.
+
+## Benchmark Report
+
+The benchmark report CLI reruns one selected local MLP E2E configuration,
+uses the test split equity curve as the strategy curve, and exports a static
+comparison against SPY, QQQ, and an equal-weight universe benchmark. It reads
+local CSV/parquet cache files only in this first version.
+
+```bash
+python -m pip install -e ".[dev,nn]"
+
+us-market-ml-benchmark-report \
+  --data-path data/curated/etf_daily_ohlcv.parquet \
+  --output-dir artifacts/benchmark_reports \
+  --report-name mlp_v1_fold_1 \
+  --train-start 2020-01-01 \
+  --train-end 2020-12-31 \
+  --validation-start 2021-01-01 \
+  --validation-end 2021-03-31 \
+  --test-start 2021-04-01 \
+  --test-end 2021-06-30 \
+  --benchmark-symbols SPY,QQQ \
+  --universe-symbols SPY,QQQ,TLT,IWM \
+  --hidden-units 256,128 \
+  --learning-rate 0.0005 \
+  --dropout 0.2 \
+  --scale-target \
+  --top-k 3
+```
+
+The command writes `{report_name}_combined_equity.csv`,
+`{report_name}_metrics.csv`, and `{report_name}_equity.png` under the selected
+output directory. Benchmark curves are calculated over the same test-period
+date range as the strategy backtest, so the PNG and CSVs show whether the
+selected MLP strategy outperformed SPY, QQQ, and the equal-weight universe
+during that held-out interval. It does not read S3, write model artifacts,
+model transaction costs or slippage, or create interactive plots.
 
 ## Structured Sweep Runner
 
