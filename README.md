@@ -150,6 +150,55 @@ runs the simple lagged signal backtest. It is not production trading
 infrastructure and does not model transaction costs, slippage, or order
 execution.
 
+## MLP Smoke CLI
+
+Install the optional neural network dependencies to run the MLP end-to-end
+smoke workflow from local curated market data:
+
+```bash
+python -m pip install -e ".[dev,nn]"
+
+us-market-ml-mlp-smoke \
+  --data-path data/curated/etf_daily_ohlcv.parquet \
+  --train-start 2020-01-01 \
+  --train-end 2020-12-31 \
+  --validation-start 2021-01-01 \
+  --validation-end 2021-03-31 \
+  --test-start 2021-04-01 \
+  --test-end 2021-06-30 \
+  --hidden-units 128,64 \
+  --max-epochs 100 \
+  --patience 10 \
+  --top-k 3
+```
+
+S3 mode requires both AWS and neural network optional dependencies:
+
+```bash
+python -m pip install -e ".[dev,aws,nn]"
+
+us-market-ml-mlp-smoke \
+  --s3-bucket us-market-data-casper \
+  --s3-curated-prefix curated/etf_daily_prices \
+  --symbols SPY,QQQ,TLT \
+  --years 2023,2024 \
+  --region-name us-west-2 \
+  --train-start 2023-01-01 \
+  --train-end 2023-12-31 \
+  --validation-start 2024-01-01 \
+  --validation-end 2024-03-31 \
+  --test-start 2024-04-01 \
+  --test-end 2024-06-30 \
+  --hidden-units 128,64 \
+  --top-k 3
+```
+
+The MLP smoke command reads one selected market data source, builds the
+supervised feature and label dataset, fits the tabular PyTorch MLP, generates
+top-K ETF rotation signals, and runs the same simple lagged signal backtest. It
+does not write artifacts or model transaction costs, slippage, or order
+execution.
+
 ## Local Setup
 
 ```bash
