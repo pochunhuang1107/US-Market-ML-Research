@@ -8,12 +8,22 @@ from us_market_ml.models.baseline import (
     predict_baseline,
     regression_metrics,
 )
+from us_market_ml.models.mlp import (
+    MLPFitResult,
+    MLPRegressorConfig,
+    fit_mlp_regressor,
+    predict_mlp,
+)
 
 __all__ = [
     "BaselineFitResult",
     "BaselineModelConfig",
+    "MLPFitResult",
+    "MLPRegressorConfig",
     "create_baseline_model",
     "fit_baseline_regressor",
+    "fit_mlp_regressor",
     "predict_baseline",
+    "predict_mlp",
     "regression_metrics",
 ]

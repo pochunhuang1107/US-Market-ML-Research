@@ -16,12 +16,18 @@ baselines:
 
 neural_networks:
   mlp:
-    enabled: false
-    hidden_layers: [128, 64]
+    enabled: true
+    hidden_units: [128, 64]
     dropout: 0.1
-    activation: relu
+    learning_rate: 0.001
+    weight_decay: 0.0
+    batch_size: 64
+    max_epochs: 100
+    patience: 10
+    random_state: 42
+    device: cpu
 
 training_defaults:
   random_seed: 42
   metric: information_coefficient
-  early_stopping: false
+  early_stopping: true
