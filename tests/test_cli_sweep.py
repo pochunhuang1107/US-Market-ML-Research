@@ -73,15 +73,19 @@ def test_run_sweep_from_args_runs_tiny_baseline_sweep(
             "ridge",
             "--top-k",
             "2",
+            "--label-horizon-days",
+            "20",
         ]
     )
 
     captured = capsys.readouterr()
+    results = pd.read_csv(output_dir / "cli_results.csv")
     assert return_code == 0
     assert "structured sweep" in captured.out
     assert "result rows: 3" in captured.out
     assert (output_dir / "cli_results.csv").exists()
     assert (output_dir / "cli_completed_keys.txt").exists()
+    assert results["label_horizon_days"].tolist() == [20, 20, 20]
 
 
 def test_cli_parser_helpers() -> None:

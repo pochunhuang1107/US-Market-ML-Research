@@ -29,7 +29,7 @@ from us_market_ml.models import (
     fit_baseline_regressor,
     predict_baseline,
 )
-from us_market_ml.splits import WalkForwardFold
+from us_market_ml.splits import PurgeConfig, WalkForwardFold, purge_fold_boundaries
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,7 @@ class BaselineExperimentConfig:
     dataset_config: SupervisedDatasetConfig = field(default_factory=SupervisedDatasetConfig)
     prediction_col: str = "prediction"
     extra_exclude_feature_cols: set[str] | None = None
+    purge_config: PurgeConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -109,7 +110,14 @@ def run_baseline_experiment(
 
     fold_results: list[BaselineFoldResult] = []
     for fold in folds:
-        train_df, validation_df, test_df = fold.split(dataset)
+        if resolved_config.purge_config is None:
+            train_df, validation_df, test_df = fold.split(dataset)
+        else:
+            train_df, validation_df, test_df = purge_fold_boundaries(
+                dataset,
+                fold,
+                resolved_config.purge_config,
+            )
         model, fit_result = fit_baseline_regressor(
             train_df=train_df,
             target_col=resolved_config.target_col,

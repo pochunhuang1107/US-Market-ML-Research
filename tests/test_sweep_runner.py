@@ -106,6 +106,19 @@ def test_build_sweep_run_key_is_deterministic_and_changes_with_hyperparameters(
     assert build_sweep_run_key(universe, fold, model, signal) != build_sweep_run_key(
         universe, fold, changed_model, signal
     )
+    assert build_sweep_run_key(
+        universe,
+        fold,
+        model,
+        signal,
+        label_horizon_days=0,
+    ) != build_sweep_run_key(
+        universe,
+        fold,
+        model,
+        signal,
+        label_horizon_days=20,
+    )
 
 
 def test_run_sweep_runs_baseline_and_writes_results_and_completed_checkpoint(
@@ -120,11 +133,31 @@ def test_run_sweep_runs_baseline_and_writes_results_and_completed_checkpoint(
     results_path = tmp_path / "sweeps" / "sweep_results.csv"
     completed_path = tmp_path / "sweeps" / "sweep_completed_keys.txt"
     assert len(results) == 3
+    assert results["label_horizon_days"].tolist() == [0, 0, 0]
     assert results_path.exists()
     assert completed_path.exists()
     assert pd.read_csv(results_path)["split"].tolist() == ["train", "validation", "test"]
     assert _header_count(results_path) == 1
     assert len(completed_path.read_text().splitlines()) == 1
+
+
+def test_run_sweep_result_rows_include_label_horizon_days(tmp_path: Path) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = SweepRunConfig(
+        universes=[SweepUniverseConfig(name="core", data_path=data_path)],
+        folds=[_fold()],
+        models=[SweepModelConfig(model_family="baseline", model_type="ridge")],
+        signals=[SweepSignalConfig(top_k=2)],
+        label_horizon_days=20,
+        output_dir=tmp_path / "sweeps",
+        run_name="purged",
+    )
+
+    results = run_sweep(config)
+
+    assert "label_horizon_days" in results.columns
+    assert results["label_horizon_days"].tolist() == [20, 20, 20]
 
 
 def test_run_sweep_appends_multiple_runs_without_duplicate_result_headers(

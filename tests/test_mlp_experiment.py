@@ -14,7 +14,7 @@ from us_market_ml.experiments import (  # noqa: E402
     summarize_mlp_experiment,
 )
 from us_market_ml.models import MLPFitResult, MLPRegressorConfig  # noqa: E402
-from us_market_ml.splits import WalkForwardFold  # noqa: E402
+from us_market_ml.splits import PurgeConfig, WalkForwardFold  # noqa: E402
 
 
 def _synthetic_etf_ohlcv() -> pd.DataFrame:
@@ -74,6 +74,7 @@ def _config(
     target_col: str = "excess_return_vs_spy_20d",
     prediction_col: str = "prediction",
     extra_exclude_feature_cols: set[str] | None = None,
+    purge_config: PurgeConfig | None = None,
 ) -> MLPExperimentConfig:
     return MLPExperimentConfig(
         target_col=target_col,
@@ -88,6 +89,7 @@ def _config(
         dataset_config=SupervisedDatasetConfig(),
         prediction_col=prediction_col,
         extra_exclude_feature_cols=extra_exclude_feature_cols,
+        purge_config=purge_config,
     )
 
 
@@ -122,6 +124,26 @@ def test_prediction_outputs_preserve_split_row_counts() -> None:
         assert len(fold_result.train_predictions) == len(train_df)
         assert len(fold_result.validation_predictions) == len(validation_df)
         assert len(fold_result.test_predictions) == len(test_df)
+
+
+def test_purge_config_reduces_train_and_validation_rows() -> None:
+    raw_df = _synthetic_etf_ohlcv()
+    folds = _folds()[:1]
+
+    normal_result = run_mlp_experiment(raw_df, folds, _config())
+    purged_result = run_mlp_experiment(
+        raw_df,
+        folds,
+        _config(purge_config=PurgeConfig(label_horizon_days=20)),
+    )
+
+    normal_fit = normal_result.fold_results[0].fit_result
+    purged_fit = purged_result.fold_results[0].fit_result
+    assert purged_fit.train_rows < normal_fit.train_rows
+    assert purged_fit.validation_rows < normal_fit.validation_rows
+    assert len(purged_result.fold_results[0].test_predictions) == len(
+        normal_result.fold_results[0].test_predictions
+    )
 
 
 def test_prediction_columns_are_present_on_all_split_outputs() -> None:

@@ -220,7 +220,8 @@ us-market-ml-sweep \
   --fold fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30 \
   --model-family baseline \
   --baseline-models ridge,linear_regression \
-  --top-k 1,2,3,5
+  --top-k 1,2,3,5 \
+  --label-horizon-days 20
 ```
 
 MLP example:
@@ -241,13 +242,21 @@ us-market-ml-sweep \
   --max-epochs 100 \
   --patience 10 \
   --batch-size 64 \
-  --top-k 1,2,3
+  --top-k 1,2,3 \
+  --label-horizon-days 20
 ```
 
 Each run writes `{run_name}_results.csv`,
 `{run_name}_completed_keys.txt`, and `{run_name}_failed_keys.txt` under the
 selected output directory. Resume is enabled by default; pass `--no-resume` to
 rerun all requested configurations.
+
+Purged walk-forward splits are optional but recommended when using
+forward-looking labels. A target such as `excess_return_vs_spy_20d` uses future
+prices, so rows near the end of a train or validation window can have labels
+that cross into the next split. Passing `--label-horizon-days 20` removes those
+calendar-day boundary rows from train and validation splits while leaving test
+rows unchanged by default.
 
 ## Local Setup
 

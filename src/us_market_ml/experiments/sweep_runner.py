@@ -32,7 +32,7 @@ from us_market_ml.experiments.mlp_e2e import (
 )
 from us_market_ml.experiments.mlp_experiment import MLPExperimentConfig
 from us_market_ml.models import BaselineModelConfig, MLPRegressorConfig
-from us_market_ml.splits import WalkForwardFold
+from us_market_ml.splits import PurgeConfig, WalkForwardFold
 
 RESULT_COLUMNS = [
     "run_key",
@@ -52,6 +52,7 @@ RESULT_COLUMNS = [
     "random_state",
     "top_k",
     "target_col",
+    "label_horizon_days",
     "total_return",
     "mean_daily_return",
     "daily_volatility",
@@ -123,6 +124,7 @@ class SweepRunConfig:
     target_col: str = "excess_return_vs_spy_20d"
     initial_equity: float = 1.0
     prediction_col: str = "prediction"
+    label_horizon_days: int = 0
     output_dir: Path | str = "artifacts/sweeps"
     run_name: str = "sweep"
     resume: bool = True
@@ -133,6 +135,7 @@ def build_sweep_run_key(
     fold: SweepFoldConfig,
     model: SweepModelConfig,
     signal: SweepSignalConfig,
+    label_horizon_days: int = 0,
 ) -> str:
     """Return a deterministic key for one universe/fold/model/signal run."""
 
@@ -141,6 +144,7 @@ def build_sweep_run_key(
         "fold": _jsonable_dataclass(fold),
         "model": _jsonable_dataclass(model),
         "signal": _jsonable_dataclass(signal),
+        "label_horizon_days": label_horizon_days,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:12]
@@ -160,6 +164,7 @@ def build_sweep_run_key(
             f"fold-{_slug(fold.name)}",
             model_part,
             f"topk-{signal.top_k}",
+            f"horizon-{label_horizon_days}d",
             f"seed-{model.random_state}",
             digest,
         ]
@@ -203,6 +208,7 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
                         fold=fold_config,
                         model=model_config,
                         signal=signal_config,
+                        label_horizon_days=config.label_horizon_days,
                     )
                     if config.resume and run_key in completed_keys:
                         continue
@@ -318,6 +324,7 @@ def _run_one_configuration(
                 "random_state": model.random_state,
                 "top_k": signal.top_k,
                 "target_col": summary_row["target_col"],
+                "label_horizon_days": config.label_horizon_days,
                 "total_return": summary_row["total_return"],
                 "mean_daily_return": summary_row["mean_daily_return"],
                 "daily_volatility": summary_row["daily_volatility"],
@@ -345,6 +352,7 @@ def _run_baseline(
                 random_state=model.random_state,
             ),
             prediction_col=config.prediction_col,
+            purge_config=_purge_config_from_sweep(config),
         ),
         signal_config=TopKSignalConfig(
             prediction_col=config.prediction_col,
@@ -378,6 +386,7 @@ def _run_mlp(
                 device=model.device,
             ),
             prediction_col=config.prediction_col,
+            purge_config=_purge_config_from_sweep(config),
         ),
         signal_config=TopKSignalConfig(
             prediction_col=config.prediction_col,
@@ -398,6 +407,8 @@ def _validate_sweep_config(config: SweepRunConfig) -> None:
         raise ValueError("At least one model is required.")
     if not config.signals:
         raise ValueError("At least one signal is required.")
+    if config.label_horizon_days < 0:
+        raise ValueError("label_horizon_days must be greater than or equal to 0.")
 
 
 def _to_walk_forward_fold(config: SweepFoldConfig) -> WalkForwardFold:
@@ -425,7 +436,11 @@ def _ensure_results_file(path: Path) -> None:
 def _read_results(path: Path) -> pd.DataFrame:
     if not path.exists() or path.stat().st_size == 0:
         return pd.DataFrame(columns=RESULT_COLUMNS)
-    return pd.read_csv(path)
+    results = pd.read_csv(path)
+    for column in RESULT_COLUMNS:
+        if column not in results.columns:
+            results[column] = np.nan
+    return results[RESULT_COLUMNS]
 
 
 def _read_checkpoint_keys(path: Path) -> set[str]:
@@ -458,6 +473,12 @@ def _format_hidden_units(model: SweepModelConfig) -> str:
     if model.model_family != "mlp":
         return "none"
     return ",".join(str(unit) for unit in model.hidden_units)
+
+
+def _purge_config_from_sweep(config: SweepRunConfig) -> PurgeConfig | None:
+    if config.label_horizon_days <= 0:
+        return None
+    return PurgeConfig(label_horizon_days=config.label_horizon_days)
 
 
 __all__ = [

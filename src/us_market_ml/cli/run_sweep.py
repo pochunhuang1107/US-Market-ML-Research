@@ -29,6 +29,7 @@ def run_sweep_from_args(argv: list[str] | None = None) -> int:
         models=models,
         signals=[SweepSignalConfig(top_k=top_k) for top_k in args.top_k],
         target_col=args.target_col,
+        label_horizon_days=args.label_horizon_days,
         output_dir=args.output_dir,
         run_name=args.run_name,
         resume=args.resume,
@@ -141,6 +142,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--target-col", default="excess_return_vs_spy_20d")
+    parser.add_argument("--label-horizon-days", type=int, default=0)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args(argv)
 
@@ -153,6 +155,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--patience must be positive.")
     if args.batch_size <= 0:
         parser.error("--batch-size must be positive.")
+    if args.label_horizon_days < 0:
+        parser.error("--label-horizon-days must be greater than or equal to 0.")
 
     return args
 
