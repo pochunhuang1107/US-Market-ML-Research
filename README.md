@@ -245,9 +245,14 @@ us-market-ml-sweep \
   --max-epochs 100 \
   --patience 10 \
   --batch-size 64 \
+  --scale-target \
   --top-k 1,2,3 \
   --label-horizon-days 20
 ```
+
+For MLP sweeps, `--scale-target` standardizes the target using the training
+split's target mean and standard deviation, then inverse-transforms predictions
+back into original return units before evaluation and backtesting.
 
 Each run writes `{run_name}_results.csv`,
 `{run_name}_completed_keys.txt`, and `{run_name}_failed_keys.txt` under the

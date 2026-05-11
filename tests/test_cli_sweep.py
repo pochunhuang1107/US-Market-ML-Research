@@ -86,6 +86,56 @@ def test_run_sweep_from_args_runs_tiny_baseline_sweep(
     assert (output_dir / "cli_results.csv").exists()
     assert (output_dir / "cli_completed_keys.txt").exists()
     assert results["label_horizon_days"].tolist() == [20, 20, 20]
+    assert results["scale_target"].tolist() == [False, False, False]
+
+
+def test_run_sweep_from_args_accepts_scale_target_for_mlp(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pytest.importorskip("torch")
+    data_path = tmp_path / "etf_daily.csv"
+    output_dir = tmp_path / "sweeps"
+    _write_csv(data_path)
+
+    return_code = run_sweep_from_args(
+        [
+            "--run-name",
+            "cli_mlp_scaled",
+            "--output-dir",
+            str(output_dir),
+            "--universe",
+            f"core:{data_path}",
+            "--fold",
+            "fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30",
+            "--model-family",
+            "mlp",
+            "--hidden-units",
+            "8",
+            "--learning-rates",
+            "0.001",
+            "--dropouts",
+            "0.0",
+            "--seeds",
+            "42",
+            "--max-epochs",
+            "1",
+            "--patience",
+            "1",
+            "--batch-size",
+            "256",
+            "--top-k",
+            "2",
+            "--scale-target",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    results = pd.read_csv(output_dir / "cli_mlp_scaled_results.csv")
+    assert return_code == 0
+    assert "result rows: 3" in captured.out
+    assert "scale_target" in results.columns
+    assert results["scale_target"].tolist() == [True, True, True]
 
 
 def test_cli_parser_helpers() -> None:
