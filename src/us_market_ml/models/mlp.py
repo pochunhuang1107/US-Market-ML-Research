@@ -38,6 +38,7 @@ class MLPRegressorConfig:
     random_state: int = 42
     device: str = "cpu"
     validation_fraction: float | None = None
+    scale_target: bool = False
 
     def __post_init__(self) -> None:
         hidden_units = tuple(self.hidden_units)
@@ -63,7 +64,12 @@ class MLPRegressorConfig:
 
 @dataclass(frozen=True)
 class MLPFitResult:
-    """Summary of a tabular MLP supervised regression fit."""
+    """Summary of a tabular MLP supervised regression fit.
+
+    ``best_validation_loss`` is the MSE optimized during training. When target
+    scaling is enabled, this loss is measured in scaled target space; fit
+    metrics remain in the original target units.
+    """
 
     target_col: str
     feature_cols: list[str]
@@ -84,6 +90,9 @@ class MLPRegressorModel:
     feature_stds: pd.Series
     feature_cols: list[str]
     config: MLPRegressorConfig
+    target_mean: float | None
+    target_std: float | None
+    scale_target: bool
 
 
 def fit_mlp_regressor(
@@ -121,7 +130,9 @@ def fit_mlp_regressor(
 
     feature_means, feature_stds = _fit_feature_standardizer(fit_train_df, feature_cols)
     x_train = _standardized_features(fit_train_df, feature_cols, feature_means, feature_stds)
-    y_train = _to_writable_float_array(fit_train_df[target_col]).reshape(-1, 1)
+    target_mean, target_std = _fit_target_standardizer(fit_train_df[target_col], resolved_config)
+    y_train_raw = _to_writable_float_array(fit_train_df[target_col]).reshape(-1, 1)
+    y_train = _scale_targets(y_train_raw, target_mean, target_std)
 
     x_validation: npt.NDArray[np.float32] | None = None
     y_validation: npt.NDArray[np.float32] | None = None
@@ -132,7 +143,8 @@ def fit_mlp_regressor(
             feature_means,
             feature_stds,
         )
-        y_validation = _to_writable_float_array(fit_validation_df[target_col]).reshape(-1, 1)
+        y_validation_raw = _to_writable_float_array(fit_validation_df[target_col]).reshape(-1, 1)
+        y_validation = _scale_targets(y_validation_raw, target_mean, target_std)
 
     device = torch.device(resolved_config.device)
     model = _create_tabular_mlp_regressor(
@@ -180,12 +192,22 @@ def fit_mlp_regressor(
         device=device,
     )
 
-    train_predictions = _predict_array(model, x_train, torch, device)
+    train_predictions_scaled = _predict_array(model, x_train, torch, device)
+    train_predictions = _inverse_scale_predictions(
+        train_predictions_scaled,
+        target_mean,
+        target_std,
+    )
     train_metrics = regression_metrics(fit_train_df[target_col], train_predictions)
 
     validation_metrics: dict[str, float] | None = None
     if fit_validation_df is not None and not fit_validation_df.empty and x_validation is not None:
-        validation_predictions = _predict_array(model, x_validation, torch, device)
+        validation_predictions_scaled = _predict_array(model, x_validation, torch, device)
+        validation_predictions = _inverse_scale_predictions(
+            validation_predictions_scaled,
+            target_mean,
+            target_std,
+        )
         validation_metrics = regression_metrics(
             fit_validation_df[target_col],
             validation_predictions,
@@ -197,6 +219,9 @@ def fit_mlp_regressor(
         feature_stds=feature_stds,
         feature_cols=list(feature_cols),
         config=resolved_config,
+        target_mean=target_mean,
+        target_std=target_std,
+        scale_target=resolved_config.scale_target,
     )
     result = MLPFitResult(
         target_col=target_col,
@@ -235,7 +260,12 @@ def predict_mlp(
             model.feature_means,
             model.feature_stds,
         )
-        out.loc[usable_mask, prediction_col] = _predict_array(model.torch_model, x, torch, device)
+        scaled_predictions = _predict_array(model.torch_model, x, torch, device)
+        out.loc[usable_mask, prediction_col] = _inverse_scale_predictions(
+            scaled_predictions,
+            model.target_mean,
+            model.target_std,
+        )
     return out
 
 
@@ -383,6 +413,40 @@ def _fit_feature_standardizer(
     return feature_means, feature_stds
 
 
+def _fit_target_standardizer(
+    target: pd.Series,
+    config: MLPRegressorConfig,
+) -> tuple[float | None, float | None]:
+    if not config.scale_target:
+        return None, None
+
+    target_mean = float(target.mean())
+    target_std = float(target.std(ddof=0))
+    if target_std == 0.0 or np.isnan(target_std):
+        target_std = 1.0
+    return target_mean, target_std
+
+
+def _scale_targets(
+    target: npt.NDArray[np.float32],
+    target_mean: float | None,
+    target_std: float | None,
+) -> npt.NDArray[np.float32]:
+    if target_mean is None or target_std is None:
+        return target
+    return _to_writable_float_array((target - target_mean) / target_std)
+
+
+def _inverse_scale_predictions(
+    predictions: npt.NDArray[np.float32],
+    target_mean: float | None,
+    target_std: float | None,
+) -> npt.NDArray[np.float32]:
+    if target_mean is None or target_std is None:
+        return predictions
+    return _to_writable_float_array((predictions * target_std) + target_mean)
+
+
 def _standardized_features(
     df: pd.DataFrame,
     feature_cols: list[str],
@@ -394,7 +458,7 @@ def _standardized_features(
 
 
 def _to_writable_float_array(values: Any) -> npt.NDArray[np.float32]:
-    return cast(npt.NDArray[np.float32], np.ascontiguousarray(values, dtype=np.float32).copy())
+    return np.ascontiguousarray(values, dtype=np.float32).copy()
 
 
 def _set_deterministic_seeds(torch: Any, random_state: int) -> None:

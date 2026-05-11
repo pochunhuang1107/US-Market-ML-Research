@@ -37,7 +37,8 @@ This bootstrap includes only the project foundation:
 - Local CSV/parquet readers for curated ETF daily OHLCV research exports.
 - Optional S3 parquet readers for curated ETF daily price partitions.
 - An optional PyTorch tabular MLP regressor that fits supervised ETF feature
-  datasets and preserves row alignment during prediction.
+  datasets, optionally standardizes targets using train-only statistics, and
+  preserves row alignment during prediction.
 
 ## Not Included Yet
 
@@ -197,7 +198,9 @@ The MLP smoke command reads one selected market data source, builds the
 supervised feature and label dataset, fits the tabular PyTorch MLP, generates
 top-K ETF rotation signals, and runs the same simple lagged signal backtest. It
 does not write artifacts or model transaction costs, slippage, or order
-execution.
+execution. MLP target scaling is optional through `MLPRegressorConfig`; when
+enabled, training uses train-only standardized targets while predictions and
+fit metrics stay in original return units.
 
 ## Structured Sweep Runner
 
