@@ -1,6 +1,6 @@
 experiment:
   name: etf_rotation_mlp
-  description: Supervised tabular MLP regression experiment. Predictions are model scores only, not trading signals.
+  description: End-to-end tabular MLP ETF rotation research experiment with top-K signal generation and lagged signal backtesting.
 
 data:
   config: configs/data.yaml
@@ -33,4 +33,10 @@ split:
   note: Pass explicit WalkForwardFold objects to the MLP runner before fitting to avoid chronological leakage.
 
 e2e:
-  note: MLP signal generation and backtesting integration is intentionally deferred to a future task.
+  top_k: 3
+  initial_equity: 1.0
+  prediction_col: prediction
+  target_col: excess_return_vs_spy_20d
+  hidden_units: [128, 64]
+  max_epochs: 100
+  patience: 10
