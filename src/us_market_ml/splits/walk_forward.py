@@ -88,6 +88,23 @@ class WalkForwardFold:
             raise ValueError("validation_end must be earlier than test_start.")
 
 
+@dataclass
+class PurgeConfig:
+    """Configuration for calendar-day purging near walk-forward boundaries."""
+
+    label_horizon_days: int = 0
+    date_col: str = "date"
+    purge_train: bool = True
+    purge_validation: bool = True
+    purge_test: bool = False
+
+    def __post_init__(self) -> None:
+        if self.label_horizon_days < 0:
+            raise ValueError("label_horizon_days must be greater than or equal to 0.")
+        if not isinstance(self.date_col, str) or not self.date_col.strip():
+            raise ValueError("date_col must be non-empty.")
+
+
 def make_annual_walk_forward_folds(
     start_year: int,
     first_validation_year: int,
@@ -184,6 +201,107 @@ def assign_split_labels(
     return out
 
 
+def purge_fold_boundaries(
+    df: pd.DataFrame,
+    fold: WalkForwardFold,
+    config: PurgeConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Return fold splits with optional label-horizon boundary rows removed.
+
+    Purging uses calendar days in this first implementation. For example, with
+    a 20-day horizon, training rows after ``fold.train_end - 20 days`` are
+    removed so labels cannot point across the train/validation boundary.
+    """
+
+    train, validation, test = fold.split(df, date_col=config.date_col)
+    if config.label_horizon_days == 0:
+        return train, validation, test
+
+    return (
+        _purge_split_end(train, fold.train_end, config, enabled=config.purge_train),
+        _purge_split_end(
+            validation,
+            fold.validation_end,
+            config,
+            enabled=config.purge_validation,
+        ),
+        _purge_split_end(test, fold.test_end, config, enabled=config.purge_test),
+    )
+
+
+def assign_purged_split_labels(
+    df: pd.DataFrame,
+    fold: WalkForwardFold,
+    config: PurgeConfig,
+    output_col: str = "split",
+) -> pd.DataFrame:
+    """Return a copy with kept purged-split rows labeled by split.
+
+    Rows outside the fold and rows removed by purging receive ``pd.NA``.
+    """
+
+    _validate_date_col(df, config.date_col)
+    out = df.copy()
+    out[output_col] = pd.Series(pd.NA, index=out.index, dtype="object")
+    out.loc[
+        _purged_range_mask(
+            out,
+            fold.train_start,
+            fold.train_end,
+            config,
+            enabled=config.purge_train,
+        ),
+        output_col,
+    ] = "train"
+    out.loc[
+        _purged_range_mask(
+            out,
+            fold.validation_start,
+            fold.validation_end,
+            config,
+            enabled=config.purge_validation,
+        ),
+        output_col,
+    ] = "validation"
+    out.loc[
+        _purged_range_mask(
+            out,
+            fold.test_start,
+            fold.test_end,
+            config,
+            enabled=config.purge_test,
+        ),
+        output_col,
+    ] = "test"
+    return out
+
+
+def summarize_purged_split(
+    df: pd.DataFrame,
+    fold: WalkForwardFold,
+    config: PurgeConfig,
+) -> dict[str, int]:
+    """Return before/after row counts for a purged walk-forward split."""
+
+    train_before, validation_before, test_before = fold.split(df, date_col=config.date_col)
+    train_after, validation_after, test_after = purge_fold_boundaries(df, fold, config)
+
+    summary = {
+        "train_rows_before": len(train_before),
+        "train_rows_after": len(train_after),
+        "validation_rows_before": len(validation_before),
+        "validation_rows_after": len(validation_after),
+        "test_rows_before": len(test_before),
+        "test_rows_after": len(test_after),
+    }
+    summary["train_rows_purged"] = summary["train_rows_before"] - summary["train_rows_after"]
+    summary["validation_rows_purged"] = (
+        summary["validation_rows_before"] - summary["validation_rows_after"]
+    )
+    summary["test_rows_purged"] = summary["test_rows_before"] - summary["test_rows_after"]
+    return summary
+
+
 def _date_range_mask(
     df: pd.DataFrame,
     start: pd.Timestamp,
@@ -193,6 +311,35 @@ def _date_range_mask(
     _validate_date_col(df, date_col)
     dates = pd.to_datetime(df[date_col])
     return (dates >= start) & (dates <= end)
+
+
+def _purged_range_mask(
+    df: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    config: PurgeConfig,
+    enabled: bool,
+) -> pd.Series:
+    dates = pd.to_datetime(df[config.date_col])
+    mask = (dates >= start) & (dates <= end)
+    if config.label_horizon_days == 0 or not enabled:
+        return mask
+    cutoff = end - pd.Timedelta(days=config.label_horizon_days)
+    return mask & (dates <= cutoff)
+
+
+def _purge_split_end(
+    split_df: pd.DataFrame,
+    split_end: pd.Timestamp,
+    config: PurgeConfig,
+    enabled: bool,
+) -> pd.DataFrame:
+    if not enabled:
+        return split_df.copy()
+
+    dates = pd.to_datetime(split_df[config.date_col])
+    cutoff = split_end - pd.Timedelta(days=config.label_horizon_days)
+    return split_df.loc[dates <= cutoff].copy()
 
 
 def _validate_date_col(df: pd.DataFrame, date_col: str) -> None:
@@ -210,7 +357,11 @@ def _timestamp_from_year_month_day(year: int, month_day: str, parameter_name: st
 
 
 __all__ = [
+    "PurgeConfig",
     "WalkForwardFold",
+    "assign_purged_split_labels",
     "assign_split_labels",
     "make_annual_walk_forward_folds",
+    "purge_fold_boundaries",
+    "summarize_purged_split",
 ]
