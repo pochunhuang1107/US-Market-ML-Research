@@ -1,16 +1,14 @@
 experiment:
   name: etf_rotation_mlp
-  description: Placeholder supervised MLP ETF rotation experiment for future runner integration.
+  description: Supervised tabular MLP regression experiment. Predictions are model scores only, not trading signals.
 
 data:
   config: configs/data.yaml
 
-features:
-  config: configs/features.yaml
-
 runner:
   target_col: excess_return_vs_spy_20d
   prediction_col: prediction
+  extra_exclude_feature_cols: []
   dataset_config:
     benchmark_symbol: SPY
     forward_horizons: [5, 10, 20]
@@ -18,16 +16,21 @@ runner:
     rank_target_col: excess_return_vs_spy_20d
     rank_col: rank_excess_return_vs_spy_20d
     price_col: close
+  model_config:
+    hidden_units: [128, 64]
+    dropout: 0.1
+    learning_rate: 0.001
+    weight_decay: 0.0
+    batch_size: 64
+    max_epochs: 100
+    patience: 10
+    random_state: 42
+    device: cpu
+    validation_fraction: null
 
 split:
   method: walk_forward
-  note: Pass explicit WalkForwardFold objects to the future MLP runner before fitting.
+  note: Pass explicit WalkForwardFold objects to the MLP runner before fitting to avoid chronological leakage.
 
-model:
-  type: mlp
-  hidden_units: [128, 64]
-  dropout: 0.1
-  learning_rate: 0.001
-  batch_size: 64
-  max_epochs: 100
-  patience: 10
+e2e:
+  note: MLP signal generation and backtesting integration is intentionally deferred to a future task.

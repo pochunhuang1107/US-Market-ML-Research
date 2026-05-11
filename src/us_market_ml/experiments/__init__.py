@@ -14,6 +14,13 @@ from us_market_ml.experiments.baseline_experiment import (
     run_baseline_experiment,
     summarize_baseline_experiment,
 )
+from us_market_ml.experiments.mlp_experiment import (
+    MLPExperimentConfig,
+    MLPExperimentResult,
+    MLPFoldResult,
+    run_mlp_experiment,
+    summarize_mlp_experiment,
+)
 
 __all__ = [
     "BaselineE2EExperimentConfig",
@@ -22,8 +29,13 @@ __all__ = [
     "BaselineExperimentConfig",
     "BaselineExperimentResult",
     "BaselineFoldResult",
+    "MLPExperimentConfig",
+    "MLPExperimentResult",
+    "MLPFoldResult",
     "run_baseline_e2e_experiment",
     "run_baseline_experiment",
+    "run_mlp_experiment",
     "summarize_baseline_e2e_experiment",
     "summarize_baseline_experiment",
+    "summarize_mlp_experiment",
 ]
