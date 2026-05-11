@@ -199,6 +199,56 @@ top-K ETF rotation signals, and runs the same simple lagged signal backtest. It
 does not write artifacts or model transaction costs, slippage, or order
 execution.
 
+## Structured Sweep Runner
+
+The structured sweep runner replaces shell loops and log scraping for longer
+baseline and MLP E2E comparisons. It reads local CSV/parquet cache files only,
+loads each universe once per sweep process, writes structured CSV results, and
+keeps completed/failed checkpoint text files so interrupted runs can resume.
+It does not read S3 directly; create local cache files first when using S3
+curated data.
+
+Baseline-only example:
+
+```bash
+python -m pip install -e ".[dev]"
+
+us-market-ml-sweep \
+  --run-name baseline_grid_v1 \
+  --output-dir artifacts/sweeps \
+  --universe core:data/curated/etf_daily_ohlcv.parquet \
+  --fold fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30 \
+  --model-family baseline \
+  --baseline-models ridge,linear_regression \
+  --top-k 1,2,3,5
+```
+
+MLP example:
+
+```bash
+python -m pip install -e ".[dev,nn]"
+
+us-market-ml-sweep \
+  --run-name mlp_grid_v1 \
+  --output-dir artifacts/sweeps \
+  --universe core:data/curated/etf_daily_ohlcv.parquet \
+  --fold fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30 \
+  --model-family mlp \
+  --hidden-units 128,64 \
+  --learning-rates 0.001,0.0005 \
+  --dropouts 0.0,0.1 \
+  --seeds 42,43 \
+  --max-epochs 100 \
+  --patience 10 \
+  --batch-size 64 \
+  --top-k 1,2,3
+```
+
+Each run writes `{run_name}_results.csv`,
+`{run_name}_completed_keys.txt`, and `{run_name}_failed_keys.txt` under the
+selected output directory. Resume is enabled by default; pass `--no-resume` to
+rerun all requested configurations.
+
 ## Local Setup
 
 ```bash
