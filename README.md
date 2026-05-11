@@ -36,13 +36,16 @@ This bootstrap includes only the project foundation:
   walk-forward folds.
 - Local CSV/parquet readers for curated ETF daily OHLCV research exports.
 - Optional S3 parquet readers for curated ETF daily price partitions.
+- An optional PyTorch tabular MLP regressor that fits supervised ETF feature
+  datasets and preserves row alignment during prediction.
 
 ## Not Included Yet
 
 The following are intentionally not implemented in this task:
 
 - S3 writing or artifact publishing.
-- Neural network implementations.
+- Sequence, convolutional, transformer, registry, and artifact-writing model
+  infrastructure beyond the first tabular MLP.
 - Transaction-cost, slippage, and order-execution simulation.
 - Live trading or brokerage integration.
 - Large notebooks or exploratory artifacts.
@@ -172,6 +175,7 @@ python -m pip install -e ".[dev,nn]"
 5. Run supervised baseline regression experiments with explicit walk-forward folds.
 6. Run the end-to-end baseline workflow to generate top-K ETF rotation signals
    and backtest lagged target weights.
-7. Compare neural network candidates such as MLP, LSTM/GRU, 1D CNN, and TCN.
+7. Compare neural network candidates such as LSTM/GRU, 1D CNN, and TCN against
+   the first tabular MLP.
 8. Backtest signals against SPY, QQQ, and equal-weight ETF baselines.
 9. Store reproducible artifacts under `artifacts/`.
