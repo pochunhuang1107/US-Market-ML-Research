@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import warnings
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
 
-pytest.importorskip("torch")
+torch = pytest.importorskip("torch")
 
 from us_market_ml.models import (  # noqa: E402
     MLPFitResult,
     MLPRegressorConfig,
+    MLPRegressorModel,
     fit_mlp_regressor,
     predict_mlp,
+    regression_metrics,
 )
 
 
@@ -100,6 +103,9 @@ def test_fit_mlp_regressor_on_small_synthetic_data() -> None:
     )
 
     assert model.feature_cols == ["feature_a", "feature_b"]
+    assert model.scale_target is False
+    assert model.target_mean is None
+    assert model.target_std is None
     assert isinstance(result, MLPFitResult)
     assert result.target_col == "target"
     assert result.feature_cols == ["feature_a", "feature_b"]
@@ -187,6 +193,94 @@ def test_predict_mlp_leaves_missing_feature_rows_with_nan_predictions() -> None:
 
     assert pd.isna(predictions.loc[1, "prediction"])
     assert predictions.loc[[0, 2], "prediction"].notna().all()
+
+
+def test_target_scaling_stores_train_only_stats() -> None:
+    train_df = pd.DataFrame(
+        {
+            "feature_a": [0.0, 1.0, 2.0, 3.0],
+            "feature_b": [1.0, 1.5, 2.0, 2.5],
+            "target": [10.0, 12.0, 14.0, 16.0],
+        }
+    )
+    validation_df = pd.DataFrame(
+        {
+            "feature_a": [4.0, 5.0],
+            "feature_b": [3.0, 3.5],
+            "target": [100.0, 200.0],
+        }
+    )
+
+    model, _ = fit_mlp_regressor(
+        train_df=train_df,
+        target_col="target",
+        feature_cols=["feature_a", "feature_b"],
+        config=_fast_config(max_epochs=1, scale_target=True),
+        validation_df=validation_df,
+    )
+
+    assert model.scale_target is True
+    assert model.target_mean == pytest.approx(train_df["target"].mean())
+    assert model.target_std == pytest.approx(train_df["target"].std(ddof=0))
+
+
+def test_predict_mlp_inverse_transforms_scaled_predictions_to_original_units() -> None:
+    class ConstantScaledModel(torch.nn.Module):  # type: ignore[misc]
+        def forward(self, features: Any) -> Any:
+            return torch.full((features.shape[0], 1), 2.0, device=features.device)
+
+    model = MLPRegressorModel(
+        torch_model=ConstantScaledModel(),
+        feature_means=pd.Series({"feature_a": 0.0, "feature_b": 0.0}),
+        feature_stds=pd.Series({"feature_a": 1.0, "feature_b": 1.0}),
+        feature_cols=["feature_a", "feature_b"],
+        config=_fast_config(scale_target=True),
+        target_mean=10.0,
+        target_std=5.0,
+        scale_target=True,
+    )
+    predict_df = pd.DataFrame(
+        {
+            "feature_a": [0.0, 1.0, 2.0],
+            "feature_b": [0.0, np.nan, 2.0],
+        }
+    )
+
+    predictions = predict_mlp(model, predict_df, ["feature_a", "feature_b"])
+
+    assert predictions.loc[[0, 2], "prediction"].tolist() == pytest.approx([20.0, 20.0])
+    assert pd.isna(predictions.loc[1, "prediction"])
+
+
+def test_target_scaled_fit_metrics_are_in_original_target_units() -> None:
+    train_df = _synthetic_regression_frame()
+
+    model, result = fit_mlp_regressor(
+        train_df=train_df,
+        target_col="target",
+        feature_cols=["feature_a", "feature_b"],
+        config=_fast_config(max_epochs=3, scale_target=True),
+    )
+
+    predictions = predict_mlp(model, train_df, ["feature_a", "feature_b"])["prediction"]
+    expected_metrics = regression_metrics(train_df["target"], predictions)
+    assert result.train_metrics == pytest.approx(expected_metrics)
+
+
+def test_constant_target_scaling_uses_unit_std() -> None:
+    train_df = _synthetic_regression_frame()
+    train_df["target"] = 0.25
+
+    model, result = fit_mlp_regressor(
+        train_df=train_df,
+        target_col="target",
+        feature_cols=["feature_a", "feature_b"],
+        config=_fast_config(max_epochs=2, scale_target=True),
+    )
+
+    assert model.target_mean == pytest.approx(0.25)
+    assert model.target_std == pytest.approx(1.0)
+    assert set(result.train_metrics) == {"mae", "rmse", "r2"}
 
 
 def test_fit_mlp_regressor_raises_for_missing_selected_columns() -> None:

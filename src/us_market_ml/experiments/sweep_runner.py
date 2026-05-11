@@ -99,6 +99,7 @@ class SweepModelConfig:
     patience: int = 10
     random_state: int = 42
     device: str = "cpu"
+    scale_target: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "hidden_units", tuple(self.hidden_units))
@@ -384,6 +385,7 @@ def _run_mlp(
                 patience=model.patience,
                 random_state=model.random_state,
                 device=model.device,
+                scale_target=model.scale_target,
             ),
             prediction_col=config.prediction_col,
             purge_config=_purge_config_from_sweep(config),

@@ -27,6 +27,7 @@ runner:
     random_state: 42
     device: cpu
     validation_fraction: null
+    scale_target: true
 
 split:
   method: walk_forward

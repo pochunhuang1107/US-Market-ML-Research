@@ -26,6 +26,7 @@ neural_networks:
     patience: 10
     random_state: 42
     device: cpu
+    scale_target: true
 
 training_defaults:
   random_seed: 42
