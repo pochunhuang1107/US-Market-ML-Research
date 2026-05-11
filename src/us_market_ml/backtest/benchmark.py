@@ -197,6 +197,56 @@ def combine_strategy_and_benchmarks(
     ).reset_index(drop=True)
 
 
+def stitch_test_equity_curves(
+    fold_curves: list[tuple[str, pd.DataFrame]],
+    date_col: str = "date",
+    return_col: str = "portfolio_return",
+    equity_col: str = "equity",
+    output_return_col: str = "portfolio_return",
+    output_equity_col: str = "equity",
+) -> pd.DataFrame:
+    """Stitch non-overlapping fold test curves into one OOS equity curve."""
+
+    output_columns = [date_col, output_return_col, output_equity_col, "source_fold"]
+    if not fold_curves:
+        return pd.DataFrame(columns=output_columns)
+
+    frames: list[pd.DataFrame] = []
+    for fold_name, curve in fold_curves:
+        _validate_required_columns(curve, [date_col, return_col, equity_col])
+        frame = curve[[date_col, return_col]].copy()
+        frame[date_col] = pd.to_datetime(frame[date_col])
+        frame["source_fold"] = fold_name
+        frames.append(frame)
+
+    stitched_returns = (
+        pd.concat(frames, ignore_index=True)
+        .sort_values(by=[date_col, "source_fold"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+    if stitched_returns.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    duplicate_dates = stitched_returns.loc[
+        stitched_returns.duplicated(subset=[date_col], keep=False),
+        date_col,
+    ]
+    if not duplicate_dates.empty:
+        overlap_dates = ", ".join(
+            date.strftime("%Y-%m-%d")
+            for date in pd.to_datetime(duplicate_dates.drop_duplicates()).sort_values()
+        )
+        raise ValueError(f"Fold test equity curves have overlapping dates: {overlap_dates}")
+
+    stitched_returns[output_return_col] = stitched_returns[return_col].astype(float)
+    stitched_returns.loc[stitched_returns.index[0], output_return_col] = 0.0
+    stitched_returns[output_equity_col] = (1.0 + stitched_returns[output_return_col]).cumprod()
+
+    return stitched_returns[
+        [date_col, output_return_col, output_equity_col, "source_fold"]
+    ].reset_index(drop=True)
+
+
 def summarize_equity_series(
     combined_equity: pd.DataFrame,
 ) -> pd.DataFrame:
@@ -259,4 +309,5 @@ __all__ = [
     "build_equal_weight_benchmark",
     "combine_strategy_and_benchmarks",
     "summarize_equity_series",
+    "stitch_test_equity_curves",
 ]

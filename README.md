@@ -41,6 +41,8 @@ This bootstrap includes only the project foundation:
   preserves row alignment during prediction.
 - Static benchmark report utilities that compare MLP test-period strategy
   equity against SPY, QQQ, and equal-weight universe benchmarks.
+- A walk-forward benchmark report that stitches multiple MLP test-period
+  backtests into one longer out-of-sample strategy-vs-benchmark chart.
 
 ## Not Included Yet
 
@@ -240,6 +242,43 @@ date range as the strategy backtest, so the PNG and CSVs show whether the
 selected MLP strategy outperformed SPY, QQQ, and the equal-weight universe
 during that held-out interval. It does not read S3, write model artifacts,
 model transaction costs or slippage, or create interactive plots.
+
+## Walk-forward Benchmark Report
+
+The walk-forward benchmark report is the preferred long-period out-of-sample
+visualization for MLP strategy research. It runs one MLP E2E experiment across
+multiple explicit walk-forward folds, takes only each fold's test split
+backtest, stitches those non-overlapping test periods chronologically, and
+plots the stitched OOS strategy equity against SPY, QQQ, and equal-weight
+benchmarks.
+
+```bash
+python -m pip install -e ".[dev,nn]"
+
+us-market-ml-walk-forward-benchmark-report \
+  --data-path data/curated/etf_daily_ohlcv.parquet \
+  --output-dir artifacts/benchmark_reports \
+  --report-name mlp_v1_walk_forward \
+  --fold fold_1:2018-01-01:2020-12-31:2021-01-01:2021-12-31:2022-01-01:2022-12-31 \
+  --fold fold_2:2018-01-01:2021-12-31:2022-01-01:2022-12-31:2023-01-01:2023-12-31 \
+  --fold fold_3:2018-01-01:2022-12-31:2023-01-01:2023-12-31:2024-01-01:2024-12-31 \
+  --benchmark-symbols SPY,QQQ \
+  --universe-symbols SPY,QQQ,TLT,IWM \
+  --hidden-units 256,128 \
+  --learning-rate 0.0005 \
+  --dropout 0.2 \
+  --scale-target \
+  --top-k 3
+```
+
+The command writes `{report_name}_combined_equity.csv`,
+`{report_name}_metrics.csv`, `{report_name}_equity.png`, and
+`{report_name}_fold_summary.csv`. Training history such as 2018 can be used as
+feature warmup and model fitting history, but it is not counted as plotted OOS
+performance unless it is inside a test fold. In the example above, the plotted
+out-of-sample period starts on 2022-01-01, the first test fold start date. This
+first version reads local cache files only and does not model transaction
+costs or slippage.
 
 ## Structured Sweep Runner
 

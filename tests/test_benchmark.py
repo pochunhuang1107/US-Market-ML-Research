@@ -8,6 +8,7 @@ from us_market_ml.backtest import (
     build_buy_and_hold_benchmark,
     build_equal_weight_benchmark,
     combine_strategy_and_benchmarks,
+    stitch_test_equity_curves,
     summarize_equity_series,
 )
 
@@ -147,3 +148,78 @@ def test_summarize_equity_series_returns_empty_metric_frame() -> None:
 def test_benchmark_initial_equity_must_be_positive() -> None:
     with pytest.raises(ValueError, match="initial_equity must be positive"):
         BenchmarkConfig(initial_equity=0.0)
+
+
+def test_stitch_test_equity_curves_non_overlapping_folds() -> None:
+    fold_a = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2021-01-01", "2021-01-02"]),
+            "portfolio_return": [0.0, 0.10],
+            "equity": [1.0, 1.10],
+        }
+    )
+    fold_b = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2021-01-04", "2021-01-03"]),
+            "portfolio_return": [0.05, -0.02],
+            "equity": [1.05, 0.98],
+        }
+    )
+
+    stitched = stitch_test_equity_curves([("fold_a", fold_a), ("fold_b", fold_b)])
+
+    assert stitched["date"].tolist() == pd.to_datetime(
+        ["2021-01-01", "2021-01-02", "2021-01-03", "2021-01-04"]
+    ).tolist()
+    assert stitched["source_fold"].tolist() == ["fold_a", "fold_a", "fold_b", "fold_b"]
+    assert stitched["portfolio_return"].tolist() == pytest.approx([0.0, 0.10, -0.02, 0.05])
+
+
+def test_stitch_test_equity_curves_raises_for_overlapping_test_dates() -> None:
+    fold_a = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2021-01-01", "2021-01-02"]),
+            "portfolio_return": [0.0, 0.10],
+            "equity": [1.0, 1.10],
+        }
+    )
+    fold_b = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2021-01-02", "2021-01-03"]),
+            "portfolio_return": [0.0, 0.05],
+            "equity": [1.0, 1.05],
+        }
+    )
+
+    with pytest.raises(ValueError, match="overlapping dates"):
+        stitch_test_equity_curves([("fold_a", fold_a), ("fold_b", fold_b)])
+
+
+def test_stitch_test_equity_curves_cumulative_math() -> None:
+    stitched = stitch_test_equity_curves(
+        [
+            (
+                "fold_a",
+                pd.DataFrame(
+                    {
+                        "date": pd.to_datetime(["2021-01-01", "2021-01-02"]),
+                        "portfolio_return": [0.25, 0.10],
+                        "equity": [1.25, 1.375],
+                    }
+                ),
+            ),
+            (
+                "fold_b",
+                pd.DataFrame(
+                    {
+                        "date": pd.to_datetime(["2021-01-03", "2021-01-04"]),
+                        "portfolio_return": [-0.20, 0.05],
+                        "equity": [0.80, 0.84],
+                    }
+                ),
+            ),
+        ]
+    )
+
+    assert stitched["portfolio_return"].tolist() == pytest.approx([0.0, 0.10, -0.20, 0.05])
+    assert stitched["equity"].tolist() == pytest.approx([1.0, 1.10, 0.88, 0.924])

@@ -5,6 +5,7 @@ from us_market_ml.backtest.benchmark import (
     build_buy_and_hold_benchmark,
     build_equal_weight_benchmark,
     combine_strategy_and_benchmarks,
+    stitch_test_equity_curves,
     summarize_equity_series,
 )
 from us_market_ml.backtest.signal_backtester import (
@@ -35,5 +36,6 @@ __all__ = [
     "summarize_backtest",
     "summarize_equity_series",
     "summarize_signals",
+    "stitch_test_equity_curves",
     "validate_signal_weights",
 ]
