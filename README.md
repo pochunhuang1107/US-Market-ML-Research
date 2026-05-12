@@ -278,10 +278,14 @@ The command writes `{report_name}_combined_equity.csv`,
 `{report_name}_position_contributions.csv`,
 `{report_name}_holdings_summary.csv`,
 `{report_name}_contribution_summary.csv`, and
-`{report_name}_daily_selection_summary.csv`. These files show what the MLP
-strategy selected during test folds and which lagged positions drove returns,
-helping identify whether outperformance came from a few ETFs or from broad
-rotation across the universe.
+`{report_name}_daily_selection_summary.csv`. The report also exports static
+holdings visualization PNGs: `{report_name}_selection_frequency.png` for
+selected days by symbol, `{report_name}_contribution_by_symbol.png` for total
+position return by symbol, and `{report_name}_monthly_selection_heatmap.png`
+for monthly selection patterns. These files show what the MLP strategy selected
+during test folds and which lagged positions drove returns, helping identify
+whether outperformance came from a few ETFs or from broad rotation across the
+universe.
 
 Training history such as 2018 can be used as feature warmup and model fitting
 history, but it is not counted as plotted OOS performance unless it is inside a

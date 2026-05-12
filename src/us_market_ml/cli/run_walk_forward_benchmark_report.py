@@ -37,7 +37,12 @@ from us_market_ml.experiments import (
 )
 from us_market_ml.models import MLPRegressorConfig
 from us_market_ml.splits import PurgeConfig, WalkForwardFold
-from us_market_ml.visualization import plot_equity_curves
+from us_market_ml.visualization import (
+    plot_contribution_by_symbol,
+    plot_equity_curves,
+    plot_monthly_selection_heatmap,
+    plot_selection_frequency,
+)
 
 
 def run_walk_forward_benchmark_report_from_args(argv: list[str] | None = None) -> int:
@@ -130,6 +135,11 @@ def run_walk_forward_benchmark_report_from_args(argv: list[str] | None = None) -
     holdings_summary_path = output_dir / f"{args.report_name}_holdings_summary.csv"
     contribution_summary_path = output_dir / f"{args.report_name}_contribution_summary.csv"
     daily_selection_summary_path = output_dir / f"{args.report_name}_daily_selection_summary.csv"
+    selection_frequency_path = output_dir / f"{args.report_name}_selection_frequency.png"
+    contribution_by_symbol_path = output_dir / f"{args.report_name}_contribution_by_symbol.png"
+    monthly_selection_heatmap_path = (
+        output_dir / f"{args.report_name}_monthly_selection_heatmap.png"
+    )
     combined_equity.to_csv(combined_path, index=False)
     metrics.to_csv(metrics_path, index=False)
     fold_summary.to_csv(fold_summary_path, index=False)
@@ -143,6 +153,9 @@ def run_walk_forward_benchmark_report_from_args(argv: list[str] | None = None) -
         plot_path,
         title="MLP Walk-Forward OOS Strategy vs Benchmark Equity",
     )
+    plot_selection_frequency(holdings_summary, selection_frequency_path)
+    plot_contribution_by_symbol(contribution_summary, contribution_by_symbol_path)
+    plot_monthly_selection_heatmap(selected_holdings, monthly_selection_heatmap_path)
 
     print("US Market ML walk-forward benchmark report")
     print(f"data path: {args.data_path}")
@@ -156,6 +169,9 @@ def run_walk_forward_benchmark_report_from_args(argv: list[str] | None = None) -
     print(f"output holdings summary CSV: {holdings_summary_path}")
     print(f"output contribution summary CSV: {contribution_summary_path}")
     print(f"output daily selection summary CSV: {daily_selection_summary_path}")
+    print(f"output selection frequency PNG: {selection_frequency_path}")
+    print(f"output contribution by symbol PNG: {contribution_by_symbol_path}")
+    print(f"output monthly selection heatmap PNG: {monthly_selection_heatmap_path}")
     print()
     print(metrics.to_string(index=False))
 
