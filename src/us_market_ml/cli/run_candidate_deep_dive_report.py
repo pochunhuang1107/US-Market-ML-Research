@@ -15,6 +15,7 @@ from us_market_ml.backtest import (
     build_concentration_report,
     build_daily_selection_summary,
     build_equal_weight_benchmark,
+    build_holding_diagnostics_report,
     build_position_contribution_frame,
     build_selected_holdings_frame,
     combine_strategy_and_benchmarks,
@@ -58,6 +59,11 @@ class _CandidateDeepDiveData:
     contribution_summary: pd.DataFrame
     concentration_report: pd.DataFrame
     daily_selection_summary: pd.DataFrame
+    holding_periods: pd.DataFrame
+    holding_period_summary: pd.DataFrame
+    holding_period_by_symbol: pd.DataFrame
+    turnover_summary: pd.DataFrame
+    top_turnover_days: pd.DataFrame
 
 
 def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> int:
@@ -93,6 +99,10 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
         position_contributions = build_position_contribution_frame(result.fold_results)
         holdings_summary = summarize_holdings(selected_holdings)
         contribution_summary = summarize_position_contributions(position_contributions)
+        holding_diagnostics = build_holding_diagnostics_report(
+            selected_holdings=selected_holdings,
+            equity_curve=stitched_strategy,
+        )
         candidate_reports.append(
             _CandidateDeepDiveData(
                 candidate=candidate,
@@ -108,6 +118,11 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
                     contribution_summary,
                 ),
                 daily_selection_summary=build_daily_selection_summary(selected_holdings),
+                holding_periods=holding_diagnostics["holding_periods"],
+                holding_period_summary=holding_diagnostics["holding_period_summary"],
+                holding_period_by_symbol=holding_diagnostics["holding_period_by_symbol"],
+                turnover_summary=holding_diagnostics["turnover_summary"],
+                top_turnover_days=holding_diagnostics["top_turnover_days"],
             )
         )
 
@@ -144,6 +159,7 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
     )
     candidate_metrics_output = candidate_rank.copy()
     concentration_summary = _build_concentration_summary(candidate_reports)
+    holding_period_summary = _build_holding_period_summary(candidate_reports)
     fold_summary = pd.DataFrame(
         [
             row
@@ -157,12 +173,16 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
     candidate_metrics_path = output_dir / f"{args.report_name}_candidate_metrics.csv"
     candidate_rank_path = output_dir / f"{args.report_name}_candidate_rank.csv"
     concentration_summary_path = output_dir / f"{args.report_name}_concentration_summary.csv"
+    holding_period_summary_path = (
+        output_dir / f"{args.report_name}_holding_period_summary.csv"
+    )
     fold_summary_path = output_dir / f"{args.report_name}_fold_summary.csv"
     candidate_equity_plot_path = output_dir / f"{args.report_name}_candidate_equity.png"
     candidate_equity.to_csv(candidate_equity_path, index=False)
     candidate_metrics_output.to_csv(candidate_metrics_path, index=False)
     candidate_rank.to_csv(candidate_rank_path, index=False)
     concentration_summary.to_csv(concentration_summary_path, index=False)
+    holding_period_summary.to_csv(holding_period_summary_path, index=False)
     fold_summary.to_csv(fold_summary_path, index=False)
     plot_equity_curves(
         candidate_equity,
@@ -177,6 +197,7 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
     print(f"output candidate metrics CSV: {candidate_metrics_path}")
     print(f"output candidate rank CSV: {candidate_rank_path}")
     print(f"output concentration summary CSV: {concentration_summary_path}")
+    print(f"output holding period summary CSV: {holding_period_summary_path}")
     print(f"output fold summary CSV: {fold_summary_path}")
     print(f"output candidate equity PNG: {candidate_equity_plot_path}")
     for report_data in candidate_reports:
@@ -308,6 +329,15 @@ def _write_candidate_report(
     contribution_summary_path = candidate_dir / f"{candidate_name}_contribution_summary.csv"
     concentration_report_path = candidate_dir / f"{candidate_name}_concentration_report.csv"
     daily_selection_summary_path = candidate_dir / f"{candidate_name}_daily_selection_summary.csv"
+    holding_periods_path = candidate_dir / f"{candidate_name}_holding_periods.csv"
+    holding_period_summary_path = (
+        candidate_dir / f"{candidate_name}_holding_period_summary.csv"
+    )
+    holding_period_by_symbol_path = (
+        candidate_dir / f"{candidate_name}_holding_period_by_symbol.csv"
+    )
+    turnover_summary_path = candidate_dir / f"{candidate_name}_turnover_summary.csv"
+    top_turnover_days_path = candidate_dir / f"{candidate_name}_top_turnover_days.csv"
     equity_path = candidate_dir / f"{candidate_name}_equity.png"
     selection_frequency_path = candidate_dir / f"{candidate_name}_selection_frequency.png"
     contribution_by_symbol_path = candidate_dir / f"{candidate_name}_contribution_by_symbol.png"
@@ -324,6 +354,11 @@ def _write_candidate_report(
     report_data.contribution_summary.to_csv(contribution_summary_path, index=False)
     report_data.concentration_report.to_csv(concentration_report_path, index=False)
     report_data.daily_selection_summary.to_csv(daily_selection_summary_path, index=False)
+    report_data.holding_periods.to_csv(holding_periods_path, index=False)
+    report_data.holding_period_summary.to_csv(holding_period_summary_path, index=False)
+    report_data.holding_period_by_symbol.to_csv(holding_period_by_symbol_path, index=False)
+    report_data.turnover_summary.to_csv(turnover_summary_path, index=False)
+    report_data.top_turnover_days.to_csv(top_turnover_days_path, index=False)
     plot_equity_curves(
         combined_equity,
         equity_path,
@@ -350,6 +385,30 @@ def _build_concentration_summary(
                     else "mlp"
                 ),
                 **metrics,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def _build_holding_period_summary(
+    candidate_reports: list[_CandidateDeepDiveData],
+) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for report_data in candidate_reports:
+        holding_period_metrics = report_data.holding_period_summary.iloc[0].to_dict()
+        turnover_metrics = report_data.turnover_summary.iloc[0].to_dict()
+        rows.append(
+            {
+                "candidate_name": report_data.candidate.name,
+                "candidate_family": report_data.candidate.family,
+                "model_type": (
+                    report_data.candidate.model_type
+                    if report_data.candidate.model_type is not None
+                    else "mlp"
+                ),
+                **holding_period_metrics,
+                **turnover_metrics,
             }
         )
 

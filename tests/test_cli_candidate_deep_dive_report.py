@@ -85,10 +85,12 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
     candidate_equity_path = output_dir / "deep_dive_candidate_equity.csv"
     candidate_equity_plot_path = output_dir / "deep_dive_candidate_equity.png"
     concentration_summary_path = output_dir / "deep_dive_concentration_summary.csv"
+    holding_period_summary_path = output_dir / "deep_dive_holding_period_summary.csv"
     fold_summary_path = output_dir / "deep_dive_fold_summary.csv"
     candidate_metrics = pd.read_csv(candidate_metrics_path)
     candidate_rank = pd.read_csv(candidate_rank_path)
     concentration_summary = pd.read_csv(concentration_summary_path)
+    holding_period_summary = pd.read_csv(holding_period_summary_path)
     fold_summary = pd.read_csv(fold_summary_path)
 
     assert return_code == 0
@@ -98,6 +100,7 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
     assert candidate_equity_path.exists()
     assert candidate_equity_plot_path.exists()
     assert concentration_summary_path.exists()
+    assert holding_period_summary_path.exists()
     assert fold_summary_path.exists()
     assert candidate_equity_plot_path.stat().st_size > 0
     assert set(candidate_metrics["candidate_name"]) == {"linear_top1", "mlp_top1"}
@@ -105,6 +108,16 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
     assert set(candidate_rank["candidate_family"]) == {"baseline", "mlp"}
     assert set(concentration_summary["candidate_name"]) == {"linear_top1", "mlp_top1"}
     assert set(concentration_summary["candidate_family"]) == {"baseline", "mlp"}
+    assert set(holding_period_summary["candidate_name"]) == {"linear_top1", "mlp_top1"}
+    assert set(holding_period_summary["candidate_family"]) == {"baseline", "mlp"}
+    assert {
+        "total_holding_periods",
+        "unique_symbols_held",
+        "avg_holding_days",
+        "mean_turnover",
+        "p95_turnover",
+        "zero_turnover_share",
+    }.issubset(holding_period_summary.columns)
     assert {
         "top_symbol_by_selection",
         "top_symbol_by_contribution",
@@ -146,6 +159,15 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
         daily_selection_summary_path = (
             candidate_dir / f"{candidate_name}_daily_selection_summary.csv"
         )
+        holding_periods_path = candidate_dir / f"{candidate_name}_holding_periods.csv"
+        holding_period_summary_path = (
+            candidate_dir / f"{candidate_name}_holding_period_summary.csv"
+        )
+        holding_period_by_symbol_path = (
+            candidate_dir / f"{candidate_name}_holding_period_by_symbol.csv"
+        )
+        turnover_summary_path = candidate_dir / f"{candidate_name}_turnover_summary.csv"
+        top_turnover_days_path = candidate_dir / f"{candidate_name}_top_turnover_days.csv"
         equity_path = candidate_dir / f"{candidate_name}_equity.png"
         selection_frequency_path = candidate_dir / f"{candidate_name}_selection_frequency.png"
         contribution_by_symbol_path = (
@@ -164,6 +186,11 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
         assert contribution_summary_path.exists()
         assert concentration_report_path.exists()
         assert daily_selection_summary_path.exists()
+        assert holding_periods_path.exists()
+        assert holding_period_summary_path.exists()
+        assert holding_period_by_symbol_path.exists()
+        assert turnover_summary_path.exists()
+        assert top_turnover_days_path.exists()
         assert equity_path.exists()
         assert selection_frequency_path.exists()
         assert contribution_by_symbol_path.exists()

@@ -46,6 +46,9 @@ This bootstrap includes only the project foundation:
 - A local candidate comparison report that overlays selected MLP and
   baseline/tree candidate OOS curves against SPY, QQQ, and equal-weight
   benchmarks.
+- Candidate deep-dive holding-period, position-switching, and turnover
+  diagnostics for judging whether a shortlist strategy is realistically
+  tradable or passive enough for further research.
 - A local cost sensitivity report that reruns selected candidates over a grid
   of turnover-based transaction-cost assumptions.
 
@@ -396,13 +399,15 @@ is still accepted for backward compatibility.
 
 The top-level output directory receives `{report_name}_candidate_equity.csv`,
 `{report_name}_candidate_metrics.csv`, `{report_name}_candidate_rank.csv`,
-`{report_name}_concentration_summary.csv`, `{report_name}_fold_summary.csv`,
+`{report_name}_concentration_summary.csv`,
+`{report_name}_holding_period_summary.csv`, `{report_name}_fold_summary.csv`,
 and `{report_name}_candidate_equity.png` for candidate-only comparison. Each
 candidate also gets its own subdirectory with combined candidate-and-benchmark
 equity, metrics, fold summary, selected holdings, position contributions,
 holdings summary, contribution summary, concentration report, daily selection
-summary, equity PNG, selection frequency PNG, contribution by symbol PNG, and
-monthly selection heatmap PNG.
+summary, holding periods, holding-period summary, holding-period by-symbol
+summary, turnover summary, top turnover days, equity PNG, selection frequency
+PNG, contribution by symbol PNG, and monthly selection heatmap PNG.
 
 The concentration diagnostics quantify whether a high-return candidate is
 fragile because it is dominated by one symbol or a small set of ETFs. Selection
@@ -421,6 +426,22 @@ those labels to 1, 2, and 3 using the higher of the selection and contribution
 risks. These grades are heuristic research-triage signals only. They are meant
 to make candidate review easier before deeper analysis or possible future
 real-money paper tracking, not to certify that a strategy is safe to trade.
+
+Holding-period diagnostics measure how long selected symbols stay in the
+portfolio before disappearing from the strategy's selected-date sequence. They
+write per-candidate CSVs for every holding streak, one-row holding summaries,
+symbol-level holding summaries, turnover distribution summaries, and the
+highest-turnover OOS dates. Consecutive holding days use the strategy's
+available dates, so weekends, holidays, and missing calendar days do not break a
+streak by themselves.
+
+Short holding periods and frequent position switching are important real-money
+feasibility warnings. A candidate that looks strong before costs may still be
+hard to implement passively if it often replaces positions after one or two
+strategy dates. High average turnover or clustered high-turnover days can make
+fixed-bps cost assumptions dominate performance and can also point to practical
+issues that this research backtester does not model, including spread,
+slippage, tax, and execution timing.
 
 ## Cost Sensitivity Report
 

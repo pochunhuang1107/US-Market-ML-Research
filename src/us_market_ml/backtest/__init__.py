@@ -17,6 +17,13 @@ from us_market_ml.backtest.concentration import (
     summarize_contribution_concentration,
     summarize_selection_concentration,
 )
+from us_market_ml.backtest.holding_period import (
+    build_holding_diagnostics_report,
+    build_holding_periods,
+    summarize_holding_periods,
+    summarize_holding_periods_by_symbol,
+    summarize_turnover_distribution,
+)
 from us_market_ml.backtest.holdings_report import (
     build_daily_selection_summary,
     build_position_contribution_frame,
@@ -49,6 +56,8 @@ __all__ = [
     "build_concentration_report",
     "build_daily_selection_summary",
     "build_equal_weight_benchmark",
+    "build_holding_diagnostics_report",
+    "build_holding_periods",
     "build_position_contribution_frame",
     "build_selected_holdings_frame",
     "calculate_daily_turnover",
@@ -63,9 +72,12 @@ __all__ = [
     "summarize_contribution_concentration",
     "summarize_equity_series",
     "summarize_holdings",
+    "summarize_holding_periods",
+    "summarize_holding_periods_by_symbol",
     "summarize_position_contributions",
     "summarize_selection_concentration",
     "summarize_signals",
+    "summarize_turnover_distribution",
     "stitch_test_equity_curves",
     "validate_signal_weights",
 ]
