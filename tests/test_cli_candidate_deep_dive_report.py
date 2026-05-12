@@ -108,7 +108,13 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
         "top_symbol_by_contribution",
         "concentration_warning",
         "contribution_warning",
+        "overall_concentration_risk",
+        "risk_score",
     }.issubset(concentration_summary.columns)
+    assert set(concentration_summary["overall_concentration_risk"]).issubset(
+        {"low", "medium", "high"}
+    )
+    assert set(concentration_summary["risk_score"]).issubset({1, 2, 3})
     assert set(fold_summary["candidate_name"]) == {"linear_top1", "mlp_top1"}
     assert set(fold_summary["candidate_family"]) == {"baseline", "mlp"}
     assert fold_summary.loc[

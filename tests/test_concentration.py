@@ -4,9 +4,11 @@ import pandas as pd
 import pytest
 
 from us_market_ml.backtest import (
+    CONCENTRATION_REPORT_COLUMNS,
     build_concentration_report,
     calculate_hhi,
     effective_number_from_hhi,
+    score_concentration_risk,
     summarize_contribution_concentration,
     summarize_selection_concentration,
 )
@@ -71,6 +73,97 @@ def test_summarize_contribution_concentration_returns_positive_and_absolute_diag
     assert summary["effective_contributing_symbols"] == pytest.approx(1.0 / 0.3472222222)
 
 
+def test_score_concentration_risk_returns_low_for_diversified_metrics() -> None:
+    report = _risk_input()
+
+    scored = score_concentration_risk(report)
+
+    assert scored.loc[0, "selection_concentration_risk"] == "low"
+    assert scored.loc[0, "contribution_concentration_risk"] == "low"
+    assert scored.loc[0, "overall_concentration_risk"] == "low"
+    assert scored.loc[0, "risk_score"] == 1
+
+
+def test_score_concentration_risk_returns_medium_selection_risk() -> None:
+    report = _risk_input(top_symbol_selected_share=0.20)
+
+    scored = score_concentration_risk(report)
+
+    assert scored.loc[0, "selection_concentration_risk"] == "medium"
+    assert scored.loc[0, "contribution_concentration_risk"] == "low"
+    assert scored.loc[0, "overall_concentration_risk"] == "medium"
+    assert scored.loc[0, "risk_score"] == 2
+
+
+def test_score_concentration_risk_returns_high_selection_risk() -> None:
+    report = _risk_input(
+        top_symbol_selected_share=0.25,
+        max_avg_target_weight=0.95,
+    )
+
+    scored = score_concentration_risk(report)
+
+    assert scored.loc[0, "selection_concentration_risk"] == "high"
+    assert scored.loc[0, "contribution_concentration_risk"] == "low"
+    assert scored.loc[0, "overall_concentration_risk"] == "high"
+    assert scored.loc[0, "risk_score"] == 3
+
+
+def test_score_concentration_risk_returns_medium_contribution_risk() -> None:
+    report = _risk_input(top_symbol_positive_contribution_share=0.25)
+
+    scored = score_concentration_risk(report)
+
+    assert scored.loc[0, "selection_concentration_risk"] == "low"
+    assert scored.loc[0, "contribution_concentration_risk"] == "medium"
+    assert scored.loc[0, "overall_concentration_risk"] == "medium"
+    assert scored.loc[0, "risk_score"] == 2
+
+
+def test_score_concentration_risk_returns_high_contribution_risk() -> None:
+    report = _risk_input(top_3_positive_contribution_share=0.80)
+
+    scored = score_concentration_risk(report)
+
+    assert scored.loc[0, "selection_concentration_risk"] == "low"
+    assert scored.loc[0, "contribution_concentration_risk"] == "high"
+    assert scored.loc[0, "overall_concentration_risk"] == "high"
+    assert scored.loc[0, "risk_score"] == 3
+
+
+def test_score_concentration_risk_uses_max_risk_for_overall_score() -> None:
+    report = _risk_input(
+        top_symbol_selected_share=0.20,
+        effective_contributing_symbols=3.4,
+    )
+
+    scored = score_concentration_risk(report)
+
+    assert scored.loc[0, "selection_concentration_risk"] == "medium"
+    assert scored.loc[0, "contribution_concentration_risk"] == "high"
+    assert scored.loc[0, "overall_concentration_risk"] == "high"
+    assert scored.loc[0, "risk_score"] == 3
+
+
+def test_score_concentration_risk_does_not_treat_nan_as_high_risk() -> None:
+    report = _risk_input(
+        top_symbol_selected_share=float("nan"),
+        top_3_selected_share=float("nan"),
+        effective_selected_symbols=float("nan"),
+        max_avg_target_weight=float("nan"),
+        top_symbol_positive_contribution_share=float("nan"),
+        top_3_positive_contribution_share=float("nan"),
+        effective_contributing_symbols=float("nan"),
+    )
+
+    scored = score_concentration_risk(report)
+
+    assert scored.loc[0, "selection_concentration_risk"] == "low"
+    assert scored.loc[0, "contribution_concentration_risk"] == "low"
+    assert scored.loc[0, "overall_concentration_risk"] == "low"
+    assert scored.loc[0, "risk_score"] == 1
+
+
 def test_build_concentration_report_returns_one_row_with_warnings() -> None:
     holdings_summary = pd.DataFrame(
         [
@@ -96,3 +189,28 @@ def test_build_concentration_report_returns_one_row_with_warnings() -> None:
     assert report.loc[0, "selection_hhi"] == pytest.approx(0.46)
     assert bool(report.loc[0, "concentration_warning"]) is True
     assert bool(report.loc[0, "contribution_warning"]) is True
+    assert report.loc[0, "selection_concentration_risk"] == "high"
+    assert report.loc[0, "contribution_concentration_risk"] == "high"
+    assert report.loc[0, "overall_concentration_risk"] == "high"
+    assert report.loc[0, "risk_score"] == 3
+    assert {
+        "selection_concentration_risk",
+        "contribution_concentration_risk",
+        "overall_concentration_risk",
+        "risk_score",
+    }.issubset(report.columns)
+    assert list(report.columns) == CONCENTRATION_REPORT_COLUMNS
+
+
+def _risk_input(**overrides: float) -> pd.DataFrame:
+    row = {
+        "top_symbol_selected_share": 0.15,
+        "top_3_selected_share": 0.45,
+        "effective_selected_symbols": 8.0,
+        "max_avg_target_weight": 0.50,
+        "top_symbol_positive_contribution_share": 0.20,
+        "top_3_positive_contribution_share": 0.50,
+        "effective_contributing_symbols": 7.0,
+    }
+    row.update(overrides)
+    return pd.DataFrame([row])

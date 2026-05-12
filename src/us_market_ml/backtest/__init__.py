@@ -9,9 +9,11 @@ from us_market_ml.backtest.benchmark import (
     summarize_equity_series,
 )
 from us_market_ml.backtest.concentration import (
+    CONCENTRATION_REPORT_COLUMNS,
     build_concentration_report,
     calculate_hhi,
     effective_number_from_hhi,
+    score_concentration_risk,
     summarize_contribution_concentration,
     summarize_selection_concentration,
 )
@@ -38,6 +40,7 @@ from us_market_ml.backtest.signals import (
 
 __all__ = [
     "BenchmarkConfig",
+    "CONCENTRATION_REPORT_COLUMNS",
     "SignalBacktestConfig",
     "SignalBacktestResult",
     "TopKSignalConfig",
@@ -53,6 +56,7 @@ __all__ = [
     "effective_number_from_hhi",
     "generate_top_k_signals",
     "run_signal_backtest",
+    "score_concentration_risk",
     "summarize_backtest",
     "summarize_contribution_concentration",
     "summarize_equity_series",
