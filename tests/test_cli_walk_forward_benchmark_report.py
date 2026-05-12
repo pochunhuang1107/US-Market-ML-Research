@@ -87,6 +87,9 @@ def test_run_walk_forward_benchmark_report_from_args_writes_outputs(
     holdings_summary_path = output_dir / "wf_holdings_summary.csv"
     contribution_summary_path = output_dir / "wf_contribution_summary.csv"
     daily_selection_summary_path = output_dir / "wf_daily_selection_summary.csv"
+    selection_frequency_path = output_dir / "wf_selection_frequency.png"
+    contribution_by_symbol_path = output_dir / "wf_contribution_by_symbol.png"
+    monthly_selection_heatmap_path = output_dir / "wf_monthly_selection_heatmap.png"
     combined = pd.read_csv(combined_path)
     metrics = pd.read_csv(metrics_path)
     fold_summary = pd.read_csv(fold_summary_path)
@@ -102,7 +105,13 @@ def test_run_walk_forward_benchmark_report_from_args_writes_outputs(
     assert holdings_summary_path.exists()
     assert contribution_summary_path.exists()
     assert daily_selection_summary_path.exists()
+    assert selection_frequency_path.exists()
+    assert contribution_by_symbol_path.exists()
+    assert monthly_selection_heatmap_path.exists()
     assert plot_path.stat().st_size > 0
+    assert selection_frequency_path.stat().st_size > 0
+    assert contribution_by_symbol_path.stat().st_size > 0
+    assert monthly_selection_heatmap_path.stat().st_size > 0
     assert set(combined["series_name"]) == {"mlp_strategy", "SPY", "QQQ", "equal_weight"}
     assert set(metrics["series_name"]) == {"mlp_strategy", "SPY", "QQQ", "equal_weight"}
     assert fold_summary["fold_name"].tolist() == ["fold_1", "fold_2"]
