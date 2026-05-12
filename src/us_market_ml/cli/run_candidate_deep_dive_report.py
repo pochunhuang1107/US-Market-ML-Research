@@ -12,6 +12,7 @@ import pandas as pd
 from us_market_ml.backtest import (
     BenchmarkConfig,
     build_buy_and_hold_benchmark,
+    build_concentration_report,
     build_daily_selection_summary,
     build_equal_weight_benchmark,
     build_position_contribution_frame,
@@ -55,6 +56,7 @@ class _CandidateDeepDiveData:
     position_contributions: pd.DataFrame
     holdings_summary: pd.DataFrame
     contribution_summary: pd.DataFrame
+    concentration_report: pd.DataFrame
     daily_selection_summary: pd.DataFrame
 
 
@@ -89,6 +91,8 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
 
         selected_holdings = build_selected_holdings_frame(result.fold_results)
         position_contributions = build_position_contribution_frame(result.fold_results)
+        holdings_summary = summarize_holdings(selected_holdings)
+        contribution_summary = summarize_position_contributions(position_contributions)
         candidate_reports.append(
             _CandidateDeepDiveData(
                 candidate=candidate,
@@ -97,8 +101,12 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
                 fold_summary=_build_candidate_fold_summary(candidate, result, folds),
                 selected_holdings=selected_holdings,
                 position_contributions=position_contributions,
-                holdings_summary=summarize_holdings(selected_holdings),
-                contribution_summary=summarize_position_contributions(position_contributions),
+                holdings_summary=holdings_summary,
+                contribution_summary=contribution_summary,
+                concentration_report=build_concentration_report(
+                    holdings_summary,
+                    contribution_summary,
+                ),
                 daily_selection_summary=build_daily_selection_summary(selected_holdings),
             )
         )
@@ -135,6 +143,7 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
         [report_data.candidate for report_data in candidate_reports],
     )
     candidate_metrics_output = candidate_rank.copy()
+    concentration_summary = _build_concentration_summary(candidate_reports)
     fold_summary = pd.DataFrame(
         [
             row
@@ -147,11 +156,13 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
     candidate_equity_path = output_dir / f"{args.report_name}_candidate_equity.csv"
     candidate_metrics_path = output_dir / f"{args.report_name}_candidate_metrics.csv"
     candidate_rank_path = output_dir / f"{args.report_name}_candidate_rank.csv"
+    concentration_summary_path = output_dir / f"{args.report_name}_concentration_summary.csv"
     fold_summary_path = output_dir / f"{args.report_name}_fold_summary.csv"
     candidate_equity_plot_path = output_dir / f"{args.report_name}_candidate_equity.png"
     candidate_equity.to_csv(candidate_equity_path, index=False)
     candidate_metrics_output.to_csv(candidate_metrics_path, index=False)
     candidate_rank.to_csv(candidate_rank_path, index=False)
+    concentration_summary.to_csv(concentration_summary_path, index=False)
     fold_summary.to_csv(fold_summary_path, index=False)
     plot_equity_curves(
         candidate_equity,
@@ -165,6 +176,7 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
     print(f"output candidate equity CSV: {candidate_equity_path}")
     print(f"output candidate metrics CSV: {candidate_metrics_path}")
     print(f"output candidate rank CSV: {candidate_rank_path}")
+    print(f"output concentration summary CSV: {concentration_summary_path}")
     print(f"output fold summary CSV: {fold_summary_path}")
     print(f"output candidate equity PNG: {candidate_equity_plot_path}")
     for report_data in candidate_reports:
@@ -291,6 +303,7 @@ def _write_candidate_report(
     position_contributions_path = candidate_dir / f"{candidate_name}_position_contributions.csv"
     holdings_summary_path = candidate_dir / f"{candidate_name}_holdings_summary.csv"
     contribution_summary_path = candidate_dir / f"{candidate_name}_contribution_summary.csv"
+    concentration_report_path = candidate_dir / f"{candidate_name}_concentration_report.csv"
     daily_selection_summary_path = candidate_dir / f"{candidate_name}_daily_selection_summary.csv"
     equity_path = candidate_dir / f"{candidate_name}_equity.png"
     selection_frequency_path = candidate_dir / f"{candidate_name}_selection_frequency.png"
@@ -306,6 +319,7 @@ def _write_candidate_report(
     report_data.position_contributions.to_csv(position_contributions_path, index=False)
     report_data.holdings_summary.to_csv(holdings_summary_path, index=False)
     report_data.contribution_summary.to_csv(contribution_summary_path, index=False)
+    report_data.concentration_report.to_csv(concentration_report_path, index=False)
     report_data.daily_selection_summary.to_csv(daily_selection_summary_path, index=False)
     plot_equity_curves(
         combined_equity,
@@ -315,6 +329,28 @@ def _write_candidate_report(
     plot_selection_frequency(report_data.holdings_summary, selection_frequency_path)
     plot_contribution_by_symbol(report_data.contribution_summary, contribution_by_symbol_path)
     plot_monthly_selection_heatmap(report_data.selected_holdings, monthly_selection_heatmap_path)
+
+
+def _build_concentration_summary(
+    candidate_reports: list[_CandidateDeepDiveData],
+) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for report_data in candidate_reports:
+        metrics = report_data.concentration_report.iloc[0].to_dict()
+        rows.append(
+            {
+                "candidate_name": report_data.candidate.name,
+                "candidate_family": report_data.candidate.family,
+                "model_type": (
+                    report_data.candidate.model_type
+                    if report_data.candidate.model_type is not None
+                    else "mlp"
+                ),
+                **metrics,
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 if __name__ == "__main__":

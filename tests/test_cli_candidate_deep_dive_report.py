@@ -82,9 +82,11 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
     candidate_rank_path = output_dir / "deep_dive_candidate_rank.csv"
     candidate_equity_path = output_dir / "deep_dive_candidate_equity.csv"
     candidate_equity_plot_path = output_dir / "deep_dive_candidate_equity.png"
+    concentration_summary_path = output_dir / "deep_dive_concentration_summary.csv"
     fold_summary_path = output_dir / "deep_dive_fold_summary.csv"
     candidate_metrics = pd.read_csv(candidate_metrics_path)
     candidate_rank = pd.read_csv(candidate_rank_path)
+    concentration_summary = pd.read_csv(concentration_summary_path)
     fold_summary = pd.read_csv(fold_summary_path)
 
     assert return_code == 0
@@ -93,11 +95,20 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
     assert candidate_rank_path.exists()
     assert candidate_equity_path.exists()
     assert candidate_equity_plot_path.exists()
+    assert concentration_summary_path.exists()
     assert fold_summary_path.exists()
     assert candidate_equity_plot_path.stat().st_size > 0
     assert set(candidate_metrics["candidate_name"]) == {"linear_top1", "mlp_top1"}
     assert set(candidate_rank["candidate_name"]) == {"linear_top1", "mlp_top1"}
     assert set(candidate_rank["candidate_family"]) == {"baseline", "mlp"}
+    assert set(concentration_summary["candidate_name"]) == {"linear_top1", "mlp_top1"}
+    assert set(concentration_summary["candidate_family"]) == {"baseline", "mlp"}
+    assert {
+        "top_symbol_by_selection",
+        "top_symbol_by_contribution",
+        "concentration_warning",
+        "contribution_warning",
+    }.issubset(concentration_summary.columns)
     assert set(fold_summary["candidate_name"]) == {"linear_top1", "mlp_top1"}
     assert set(fold_summary["candidate_family"]) == {"baseline", "mlp"}
     assert fold_summary.loc[
@@ -114,6 +125,7 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
         )
         holdings_summary_path = candidate_dir / f"{candidate_name}_holdings_summary.csv"
         contribution_summary_path = candidate_dir / f"{candidate_name}_contribution_summary.csv"
+        concentration_report_path = candidate_dir / f"{candidate_name}_concentration_report.csv"
         daily_selection_summary_path = (
             candidate_dir / f"{candidate_name}_daily_selection_summary.csv"
         )
@@ -133,6 +145,7 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
         assert position_contributions_path.exists()
         assert holdings_summary_path.exists()
         assert contribution_summary_path.exists()
+        assert concentration_report_path.exists()
         assert daily_selection_summary_path.exists()
         assert equity_path.exists()
         assert selection_frequency_path.exists()
