@@ -43,6 +43,8 @@ This bootstrap includes only the project foundation:
   equity against SPY, QQQ, and equal-weight universe benchmarks.
 - A walk-forward benchmark report that stitches multiple MLP test-period
   backtests into one longer out-of-sample strategy-vs-benchmark chart.
+- A local candidate comparison report that overlays multiple selected MLP
+  candidate OOS curves against SPY, QQQ, and equal-weight benchmarks.
 
 ## Not Included Yet
 
@@ -292,6 +294,46 @@ history, but it is not counted as plotted OOS performance unless it is inside a
 test fold. In the example above, the plotted out-of-sample period starts on
 2022-01-01, the first test fold start date. This first version reads local
 cache files only and does not model transaction costs or slippage.
+
+## Candidate Comparison Report
+
+The candidate comparison report is for comparing selected MLP sweep winners
+side by side. It reruns each named candidate across the same explicit
+walk-forward folds, stitches only the test split equity curves, verifies that
+candidate OOS dates align, and overlays all candidate strategy curves against
+SPY, QQQ, and equal-weight benchmarks over the shared OOS date range. This is
+local-only in v1 and does not write model artifacts, model transaction costs or
+slippage, compare baseline models, or create interactive charts.
+
+```bash
+python -m pip install -e ".[dev,nn]"
+
+us-market-ml-candidate-comparison-report \
+  --data-path data/curated/etf_daily_ohlcv.parquet \
+  --output-dir artifacts/benchmark_reports \
+  --report-name mlp_v1_candidate_comparison \
+  --fold fold_1:2018-01-01:2020-12-31:2021-01-01:2021-12-31:2022-01-01:2022-12-31 \
+  --fold fold_2:2018-01-01:2021-12-31:2022-01-01:2022-12-31:2023-01-01:2023-12-31 \
+  --fold fold_3:2018-01-01:2022-12-31:2023-01-01:2023-12-31:2024-01-01:2024-12-31 \
+  --candidate best_sharpe_top3:3:256,128:0.0005:0.2:42 \
+  --candidate best_return_top3:3:128,64:0.001:0.1:43 \
+  --candidate conservative_top5:5:128:0.0005:0.0:42 \
+  --benchmark-symbols SPY,QQQ \
+  --universe-symbols SPY,QQQ,TLT,IWM \
+  --scale-target \
+  --max-epochs 120 \
+  --patience 12 \
+  --batch-size 128
+```
+
+Each `--candidate` value uses
+`name:top_k:hidden_units:learning_rate:dropout:random_state`. Candidate names
+must be unique. The command writes `{report_name}_combined_equity.csv` with all
+candidate and benchmark equity series, `{report_name}_metrics.csv` with metrics
+for every plotted series, `{report_name}_candidate_rank.csv` with candidate-only
+total return, Sharpe-like, drawdown, final equity, and metric ranks,
+`{report_name}_fold_summary.csv` with per-candidate test-fold summaries, and
+`{report_name}_equity.png` with the combined static equity chart.
 
 ## Structured Sweep Runner
 
