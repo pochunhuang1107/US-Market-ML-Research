@@ -157,6 +157,8 @@ def test_run_candidate_comparison_report_from_args_writes_outputs(
             "2",
             "--batch-size",
             "16",
+            "--transaction-cost-bps",
+            "5",
         ]
     )
 
@@ -211,8 +213,21 @@ def test_run_candidate_comparison_report_from_args_writes_outputs(
         "strategy_total_return",
         "strategy_max_drawdown",
         "strategy_final_equity",
+        "strategy_total_transaction_cost",
+        "strategy_mean_daily_turnover",
         "epochs_trained",
     }.issubset(fold_summary.columns)
+    assert {
+        "total_transaction_cost",
+        "mean_daily_turnover",
+        "max_daily_turnover",
+    }.issubset(metrics.columns)
+    assert {
+        "total_transaction_cost",
+        "mean_daily_turnover",
+        "max_daily_turnover",
+    }.issubset(candidate_rank.columns)
+    assert candidate_rank["total_transaction_cost"].notna().all()
     assert set(fold_summary["candidate_family"]) == {"mlp", "baseline"}
     assert fold_summary.loc[
         fold_summary["candidate_family"] == "baseline", "epochs_trained"

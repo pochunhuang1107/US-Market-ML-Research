@@ -144,8 +144,8 @@ def summarize_mlp_e2e_experiment(
     """Return one row per fold and split with signal backtest metrics.
 
     Metrics summarize the lagged-weight research backtest produced from top-K
-    target weights. They do not include transaction costs, slippage, artifact
-    paths, live trading state, or execution simulation.
+    target weights. Transaction costs, when configured, are simple turnover
+    bps approximations rather than execution simulation.
     """
 
     rows: list[dict[str, object]] = []
@@ -176,6 +176,9 @@ def summarize_mlp_e2e_experiment(
                     "sharpe_like": metrics["sharpe_like"],
                     "max_drawdown": metrics["max_drawdown"],
                     "final_equity": metrics["final_equity"],
+                    "total_transaction_cost": metrics.get("total_transaction_cost"),
+                    "mean_daily_turnover": metrics.get("mean_daily_turnover"),
+                    "max_daily_turnover": metrics.get("max_daily_turnover"),
                 }
             )
 
@@ -194,6 +197,9 @@ def summarize_mlp_e2e_experiment(
             "sharpe_like",
             "max_drawdown",
             "final_equity",
+            "total_transaction_cost",
+            "mean_daily_turnover",
+            "max_daily_turnover",
         ],
     )
 

@@ -74,6 +74,8 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
             "2",
             "--batch-size",
             "16",
+            "--transaction-cost-bps",
+            "5",
         ]
     )
 
@@ -117,6 +119,15 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
     assert set(concentration_summary["risk_score"]).issubset({1, 2, 3})
     assert set(fold_summary["candidate_name"]) == {"linear_top1", "mlp_top1"}
     assert set(fold_summary["candidate_family"]) == {"baseline", "mlp"}
+    assert {
+        "strategy_total_transaction_cost",
+        "strategy_mean_daily_turnover",
+    }.issubset(fold_summary.columns)
+    assert {
+        "total_transaction_cost",
+        "mean_daily_turnover",
+        "max_daily_turnover",
+    }.issubset(candidate_metrics.columns)
     assert fold_summary.loc[
         fold_summary["candidate_family"] == "baseline", "epochs_trained"
     ].isna().all()

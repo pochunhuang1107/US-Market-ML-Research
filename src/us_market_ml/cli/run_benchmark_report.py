@@ -62,7 +62,10 @@ def run_benchmark_report_from_args(argv: list[str] | None = None) -> int:
             ),
         ),
         signal_config=TopKSignalConfig(top_k=args.top_k),
-        backtest_config=SignalBacktestConfig(initial_equity=1.0),
+        backtest_config=SignalBacktestConfig(
+            initial_equity=1.0,
+            transaction_cost_bps=args.transaction_cost_bps,
+        ),
     )
 
     result = run_mlp_e2e_experiment(
@@ -184,6 +187,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--batch-size", default=128, type=int)
     parser.add_argument("--random-state", default=42, type=int)
     parser.add_argument("--label-horizon-days", default=20, type=int)
+    parser.add_argument("--transaction-cost-bps", default=0.0, type=float)
     args = parser.parse_args(argv)
 
     if args.top_k <= 0:
@@ -196,6 +200,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--batch-size must be positive.")
     if args.label_horizon_days < 0:
         parser.error("--label-horizon-days must be greater than or equal to 0.")
+    if args.transaction_cost_bps < 0.0:
+        parser.error("--transaction-cost-bps must be greater than or equal to 0.")
 
     return args
 

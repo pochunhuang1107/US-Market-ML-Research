@@ -155,8 +155,7 @@ This command is a deterministic real-data smoke test for the current research
 workflow. It reads ETF OHLCV data from one selected input source, builds
 features and labels, fits the baseline model, generates top-K signals, and
 runs the simple lagged signal backtest. It is not production trading
-infrastructure and does not model transaction costs, slippage, or order
-execution.
+infrastructure or a full execution simulator.
 
 ## MLP Smoke CLI
 
@@ -204,10 +203,19 @@ us-market-ml-mlp-smoke \
 The MLP smoke command reads one selected market data source, builds the
 supervised feature and label dataset, fits the tabular PyTorch MLP, generates
 top-K ETF rotation signals, and runs the same simple lagged signal backtest. It
-does not write artifacts or model transaction costs, slippage, or order
-execution. MLP target scaling is optional through `MLPRegressorConfig`; when
-enabled, training uses train-only standardized targets while predictions and
-fit metrics stay in original return units.
+does not write artifacts or simulate order execution. MLP target scaling is
+optional through `MLPRegressorConfig`; when enabled, training uses train-only
+standardized targets while predictions and fit metrics stay in original return
+units.
+
+Signal backtests support an optional fixed transaction-cost assumption through
+`transaction_cost_bps`, which defaults to `0.0`. Daily turnover is calculated
+from target weight changes by date and symbol, with the first date set to zero;
+cost is `turnover × bps / 10000`. Strategy equity and summary metrics use net
+`portfolio_return`, while `gross_portfolio_return`, `transaction_cost`, and
+`turnover` are also written on strategy equity curves. This is a first-order
+turnover-based approximation, not a bid/ask spread, slippage, intraday fill,
+tax, or full execution simulator.
 
 ## Benchmark Report
 
@@ -235,7 +243,8 @@ us-market-ml-benchmark-report \
   --learning-rate 0.0005 \
   --dropout 0.2 \
   --scale-target \
-  --top-k 3
+  --top-k 3 \
+  --transaction-cost-bps 5
 ```
 
 The command writes `{report_name}_combined_equity.csv`,
@@ -244,7 +253,7 @@ output directory. Benchmark curves are calculated over the same test-period
 date range as the strategy backtest, so the PNG and CSVs show whether the
 selected MLP strategy outperformed SPY, QQQ, and the equal-weight universe
 during that held-out interval. It does not read S3, write model artifacts,
-model transaction costs or slippage, or create interactive plots.
+simulate advanced execution or slippage, or create interactive plots.
 
 ## Walk-forward Benchmark Report
 
@@ -271,7 +280,8 @@ us-market-ml-walk-forward-benchmark-report \
   --learning-rate 0.0005 \
   --dropout 0.2 \
   --scale-target \
-  --top-k 3
+  --top-k 3 \
+  --transaction-cost-bps 5
 ```
 
 The command writes `{report_name}_combined_equity.csv`,
@@ -294,7 +304,8 @@ Training history such as 2018 can be used as feature warmup and model fitting
 history, but it is not counted as plotted OOS performance unless it is inside a
 test fold. In the example above, the plotted out-of-sample period starts on
 2022-01-01, the first test fold start date. This first version reads local
-cache files only and does not model transaction costs or slippage.
+cache files only and uses only the optional fixed-bps turnover cost model, not
+full execution or slippage simulation.
 
 ## Candidate Comparison Report
 
@@ -304,7 +315,7 @@ the same explicit walk-forward folds, stitches only the test split equity
 curves, verifies that candidate OOS dates align, and overlays all candidate
 strategy curves against SPY, QQQ, and equal-weight benchmarks over the shared
 OOS date range. This is local-only in v1 and does not write model artifacts,
-model transaction costs or slippage, or create interactive charts.
+simulate advanced execution or slippage, or create interactive charts.
 
 ```bash
 python -m pip install -e ".[dev,nn]"
@@ -324,7 +335,8 @@ us-market-ml-candidate-comparison-report \
   --scale-target \
   --max-epochs 120 \
   --patience 12 \
-  --batch-size 128
+  --batch-size 128 \
+  --transaction-cost-bps 5
 ```
 
 MLP candidates use
@@ -337,7 +349,8 @@ for backward compatibility. Candidate names must be unique. The command writes
 `{report_name}_combined_equity.csv` with all candidate and benchmark equity
 series, `{report_name}_metrics.csv` with metrics for every plotted series,
 `{report_name}_candidate_rank.csv` with candidate family, model type, total
-return, Sharpe-like, drawdown, final equity, and metric ranks,
+return, Sharpe-like, drawdown, final equity, optional cost/turnover metrics,
+and metric ranks,
 `{report_name}_fold_summary.csv` with per-candidate test-fold summaries, and
 `{report_name}_equity.png` with the combined static equity chart.
 
@@ -349,8 +362,8 @@ writes a full diagnostic pack for each one. It uses only stitched OOS test
 curves for performance comparison, verifies candidate test dates align,
 computes benchmarks over the shared OOS date range, and adds holdings,
 contribution, daily selection, and static visualization outputs for every
-candidate. This is local-only in v1 and does not write model artifacts, model
-transaction costs or slippage, or create a web UI.
+candidate. This is local-only in v1 and does not write model artifacts,
+simulate advanced execution or slippage, or create a web UI.
 
 ```bash
 python -m pip install -e ".[dev,nn]"
@@ -369,7 +382,8 @@ us-market-ml-candidate-deep-dive-report \
   --scale-target \
   --max-epochs 120 \
   --patience 12 \
-  --batch-size 128
+  --batch-size 128 \
+  --transaction-cost-bps 5
 ```
 
 MLP candidates use
