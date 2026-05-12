@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import ExtraTreesRegressor, GradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
@@ -32,6 +32,18 @@ class BaselineModelConfig:
     alpha: float = 1.0
     n_estimators: int = 100
     max_depth: int | None = None
+    learning_rate: float = 0.05
+    subsample: float = 1.0
+    min_samples_leaf: int = 1
+    max_features: str | float | None = None
+
+    def __post_init__(self) -> None:
+        if self.learning_rate <= 0:
+            raise ValueError("learning_rate must be greater than 0.")
+        if not 0 < self.subsample <= 1:
+            raise ValueError("subsample must be greater than 0 and less than or equal to 1.")
+        if self.min_samples_leaf <= 0:
+            raise ValueError("min_samples_leaf must be greater than 0.")
 
 
 @dataclass(frozen=True)
@@ -64,8 +76,26 @@ def create_baseline_model(config: BaselineModelConfig) -> Any:
             max_depth=config.max_depth,
             random_state=config.random_state,
         )
+    if config.model_type == "gradient_boosting":
+        return GradientBoostingRegressor(
+            n_estimators=config.n_estimators,
+            learning_rate=config.learning_rate,
+            max_depth=config.max_depth if config.max_depth is not None else 3,
+            subsample=config.subsample,
+            min_samples_leaf=config.min_samples_leaf,
+            random_state=config.random_state,
+        )
+    if config.model_type == "extra_trees":
+        return ExtraTreesRegressor(
+            n_estimators=config.n_estimators,
+            max_depth=config.max_depth,
+            min_samples_leaf=config.min_samples_leaf,
+            max_features=config.max_features,
+            random_state=config.random_state,
+            n_jobs=-1,
+        )
 
-    supported = "ridge, linear_regression, random_forest"
+    supported = "ridge, linear_regression, random_forest, gradient_boosting, extra_trees"
     raise ValueError(
         f"Unsupported baseline model_type {config.model_type!r}; expected one of: {supported}."
     )
