@@ -258,6 +258,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--batch-size", default=128, type=int)
     parser.add_argument("--label-horizon-days", default=20, type=int)
     parser.add_argument("--transaction-cost-bps", default=0.0, type=float)
+    parser.add_argument("--min-holding-days", default=1, type=int)
+    parser.add_argument("--switch-margin", default=0.0, type=float)
     args = parser.parse_args(argv)
 
     candidate_names = [candidate.name for candidate in args.candidate]
@@ -276,6 +278,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--label-horizon-days must be greater than or equal to 0.")
     if args.transaction_cost_bps < 0.0:
         parser.error("--transaction-cost-bps must be greater than or equal to 0.")
+    if args.min_holding_days < 1:
+        parser.error("--min-holding-days must be greater than or equal to 1.")
+    if args.switch_margin < 0.0:
+        parser.error("--switch-margin must be greater than or equal to 0.")
 
     return args
 

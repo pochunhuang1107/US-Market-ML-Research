@@ -5,8 +5,10 @@ import pandas as pd
 import pytest
 
 from us_market_ml.backtest import (
+    SignalSmoothingConfig,
     TopKSignalConfig,
     generate_top_k_signals,
+    smooth_top_k_signals,
     summarize_signals,
     validate_signal_weights,
 )
@@ -196,3 +198,95 @@ def test_missing_required_signal_columns_raise_value_error() -> None:
 def test_top_k_must_be_positive() -> None:
     with pytest.raises(ValueError, match="top_k must be positive"):
         TopKSignalConfig(top_k=0)
+
+
+def test_smoothing_config_validates_min_holding_days_and_switch_margin() -> None:
+    with pytest.raises(ValueError, match="min_holding_days"):
+        SignalSmoothingConfig(min_holding_days=0)
+
+    with pytest.raises(ValueError, match="switch_margin"):
+        SignalSmoothingConfig(switch_margin=-0.01)
+
+
+def test_top_1_smoothing_keeps_holding_for_min_holding_days() -> None:
+    predictions = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "SPY", "prediction": 0.50},
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "QQQ", "prediction": 0.40},
+            {"date": pd.Timestamp("2021-01-02"), "symbol": "SPY", "prediction": 0.10},
+            {"date": pd.Timestamp("2021-01-02"), "symbol": "QQQ", "prediction": 0.90},
+            {"date": pd.Timestamp("2021-01-03"), "symbol": "SPY", "prediction": 0.20},
+            {"date": pd.Timestamp("2021-01-03"), "symbol": "QQQ", "prediction": 0.80},
+        ]
+    )
+    signals = generate_top_k_signals(predictions, TopKSignalConfig(top_k=1))
+
+    smoothed = smooth_top_k_signals(signals, SignalSmoothingConfig(min_holding_days=2))
+
+    selected_by_date = _selected_symbols_by_date(smoothed)
+    assert selected_by_date[pd.Timestamp("2021-01-01")] == ["SPY"]
+    assert selected_by_date[pd.Timestamp("2021-01-02")] == ["SPY"]
+    assert selected_by_date[pd.Timestamp("2021-01-03")] == ["QQQ"]
+
+
+def test_top_1_switch_margin_prevents_weak_switches() -> None:
+    predictions = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "SPY", "prediction": 0.50},
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "QQQ", "prediction": 0.40},
+            {"date": pd.Timestamp("2021-01-02"), "symbol": "SPY", "prediction": 0.48},
+            {"date": pd.Timestamp("2021-01-02"), "symbol": "QQQ", "prediction": 0.52},
+        ]
+    )
+    signals = generate_top_k_signals(predictions, TopKSignalConfig(top_k=1))
+
+    smoothed = smooth_top_k_signals(signals, SignalSmoothingConfig(switch_margin=0.05))
+
+    assert _selected_symbols_by_date(smoothed)[pd.Timestamp("2021-01-02")] == ["SPY"]
+
+
+def test_top_1_switches_when_margin_is_exceeded() -> None:
+    predictions = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "SPY", "prediction": 0.50},
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "QQQ", "prediction": 0.40},
+            {"date": pd.Timestamp("2021-01-02"), "symbol": "SPY", "prediction": 0.45},
+            {"date": pd.Timestamp("2021-01-02"), "symbol": "QQQ", "prediction": 0.56},
+        ]
+    )
+    signals = generate_top_k_signals(predictions, TopKSignalConfig(top_k=1))
+
+    smoothed = smooth_top_k_signals(signals, SignalSmoothingConfig(switch_margin=0.05))
+
+    assert _selected_symbols_by_date(smoothed)[pd.Timestamp("2021-01-02")] == ["QQQ"]
+
+
+def test_top_k_smoothing_preserves_selected_count_and_total_weight() -> None:
+    predictions = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "SPY", "prediction": 0.90},
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "QQQ", "prediction": 0.80},
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "TLT", "prediction": 0.10},
+            {"date": pd.Timestamp("2021-01-02"), "symbol": "SPY", "prediction": 0.10},
+            {"date": pd.Timestamp("2021-01-02"), "symbol": "QQQ", "prediction": 0.20},
+            {"date": pd.Timestamp("2021-01-02"), "symbol": "TLT", "prediction": 0.95},
+            {"date": pd.Timestamp("2021-01-03"), "symbol": "SPY", "prediction": 0.10},
+            {"date": pd.Timestamp("2021-01-03"), "symbol": "QQQ", "prediction": 0.20},
+            {"date": pd.Timestamp("2021-01-03"), "symbol": "TLT", "prediction": 0.95},
+        ]
+    )
+    signals = generate_top_k_signals(predictions, TopKSignalConfig(top_k=2))
+
+    smoothed = smooth_top_k_signals(signals, SignalSmoothingConfig(min_holding_days=2))
+    summary = summarize_signals(smoothed, TopKSignalConfig(top_k=2))
+
+    assert summary["selected_count"].tolist() == [2, 2, 2]
+    assert summary["total_weight"].tolist() == [1.0, 1.0, 1.0]
+    assert validate_signal_weights(smoothed, TopKSignalConfig(top_k=2))
+
+
+def _selected_symbols_by_date(signals: pd.DataFrame) -> dict[pd.Timestamp, list[str]]:
+    return {
+        date: group.loc[group["selected"], "symbol"].tolist()
+        for date, group in signals.groupby("date", sort=False)
+    }

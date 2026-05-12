@@ -137,6 +137,16 @@ def test_build_sweep_run_key_is_deterministic_and_changes_with_hyperparameters(
     assert "scaletarget-true" in scaled_key
     assert "scaletarget-false" in unscaled_key
 
+    smoothed_signal = SweepSignalConfig(top_k=2, min_holding_days=3, switch_margin=0.02)
+    smoothed_key = build_sweep_run_key(universe, fold, model, smoothed_signal)
+    assert smoothed_key != unscaled_key
+    assert "hold-3d" in smoothed_key
+    assert "margin-0.02" in smoothed_key
+
+    cost_key = build_sweep_run_key(universe, fold, model, signal, transaction_cost_bps=10.0)
+    assert cost_key != unscaled_key
+    assert "cost-10bps" in cost_key
+
 
 def test_run_sweep_runs_baseline_and_writes_results_and_completed_checkpoint(
     tmp_path: Path,
@@ -151,6 +161,7 @@ def test_run_sweep_runs_baseline_and_writes_results_and_completed_checkpoint(
     completed_path = tmp_path / "sweeps" / "sweep_completed_keys.txt"
     assert len(results) == 3
     assert results["label_horizon_days"].tolist() == [0, 0, 0]
+    assert results["transaction_cost_bps"].tolist() == [0.0, 0.0, 0.0]
     assert results["scale_target"].tolist() == [False, False, False]
     assert results_path.exists()
     assert completed_path.exists()
@@ -178,6 +189,45 @@ def test_run_sweep_result_rows_include_label_horizon_days(tmp_path: Path) -> Non
     assert results["label_horizon_days"].tolist() == [20, 20, 20]
 
 
+def test_run_sweep_result_rows_include_smoothing_parameters(tmp_path: Path) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = SweepRunConfig(
+        universes=[SweepUniverseConfig(name="core", data_path=data_path)],
+        folds=[_fold()],
+        models=[SweepModelConfig(model_family="baseline", model_type="ridge")],
+        signals=[SweepSignalConfig(top_k=1, min_holding_days=3, switch_margin=0.05)],
+        output_dir=tmp_path / "sweeps",
+        run_name="smoothed",
+    )
+
+    results = run_sweep(config)
+
+    assert "min_holding_days" in results.columns
+    assert "switch_margin" in results.columns
+    assert results["min_holding_days"].tolist() == [3, 3, 3]
+    assert results["switch_margin"].tolist() == [0.05, 0.05, 0.05]
+
+
+def test_run_sweep_result_rows_include_transaction_cost_bps(tmp_path: Path) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = SweepRunConfig(
+        universes=[SweepUniverseConfig(name="core", data_path=data_path)],
+        folds=[_fold()],
+        models=[SweepModelConfig(model_family="baseline", model_type="ridge")],
+        signals=[SweepSignalConfig(top_k=1)],
+        transaction_cost_bps_values=[10.0],
+        output_dir=tmp_path / "sweeps",
+        run_name="costs",
+    )
+
+    results = run_sweep(config)
+
+    assert "transaction_cost_bps" in results.columns
+    assert results["transaction_cost_bps"].tolist() == [10.0, 10.0, 10.0]
+
+
 def test_run_one_configuration_result_rows_include_mlp_scale_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -199,8 +249,10 @@ def test_run_one_configuration_result_rows_include_mlp_scale_target(
         model_config: SweepModelConfig,
         signal_config: SweepSignalConfig,
         run_config: SweepRunConfig,
+        transaction_cost_bps: float,
     ) -> pd.DataFrame:
         assert model_config.scale_target is True
+        assert transaction_cost_bps == 0.0
         return pd.DataFrame(
             [
                 {

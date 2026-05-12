@@ -19,9 +19,11 @@ import pandas as pd
 from us_market_ml.backtest import (
     SignalBacktestConfig,
     SignalBacktestResult,
+    SignalSmoothingConfig,
     TopKSignalConfig,
     generate_top_k_signals,
     run_signal_backtest,
+    smooth_top_k_signals,
 )
 from us_market_ml.experiments.baseline_experiment import (
     BaselineExperimentConfig,
@@ -44,6 +46,7 @@ class BaselineE2EExperimentConfig:
     baseline_config: BaselineExperimentConfig = field(default_factory=BaselineExperimentConfig)
     signal_config: TopKSignalConfig = field(default_factory=TopKSignalConfig)
     backtest_config: SignalBacktestConfig = field(default_factory=SignalBacktestConfig)
+    smoothing_config: SignalSmoothingConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -97,17 +100,20 @@ def run_baseline_e2e_experiment(
 
     fold_results: list[BaselineE2EFoldResult] = []
     for baseline_fold_result in baseline_result.fold_results:
-        train_signals = generate_top_k_signals(
+        train_signals = _generate_and_smooth_signals(
             baseline_fold_result.train_predictions,
             resolved_config.signal_config,
+            resolved_config.smoothing_config,
         )
-        validation_signals = generate_top_k_signals(
+        validation_signals = _generate_and_smooth_signals(
             baseline_fold_result.validation_predictions,
             resolved_config.signal_config,
+            resolved_config.smoothing_config,
         )
-        test_signals = generate_top_k_signals(
+        test_signals = _generate_and_smooth_signals(
             baseline_fold_result.test_predictions,
             resolved_config.signal_config,
+            resolved_config.smoothing_config,
         )
 
         fold_results.append(
@@ -210,6 +216,41 @@ def _validate_prediction_column_alignment(config: BaselineE2EExperimentConfig) -
             "baseline_config.prediction_col must match signal_config.prediction_col; "
             f"got {baseline_prediction_col!r} and {signal_prediction_col!r}."
         )
+    if config.smoothing_config is None:
+        return
+    smoothing_config = config.smoothing_config
+    aligned_columns = {
+        "prediction_col": (
+            config.signal_config.prediction_col,
+            smoothing_config.prediction_col,
+        ),
+        "date_col": (config.signal_config.date_col, smoothing_config.date_col),
+        "symbol_col": (config.signal_config.symbol_col, smoothing_config.symbol_col),
+        "selected_col": (config.signal_config.selected_col, smoothing_config.selected_col),
+        "rank_col": (config.signal_config.rank_col, smoothing_config.signal_rank_col),
+        "weight_col": (config.signal_config.weight_col, smoothing_config.target_weight_col),
+    }
+    mismatches = [
+        f"{name}: {signal_value!r} != {smoothing_value!r}"
+        for name, (signal_value, smoothing_value) in aligned_columns.items()
+        if signal_value != smoothing_value
+    ]
+    if mismatches:
+        raise ValueError(
+            "signal_config columns must match smoothing_config columns; "
+            + "; ".join(mismatches)
+        )
+
+
+def _generate_and_smooth_signals(
+    predictions: pd.DataFrame,
+    signal_config: TopKSignalConfig,
+    smoothing_config: SignalSmoothingConfig | None,
+) -> pd.DataFrame:
+    signals = generate_top_k_signals(predictions, signal_config)
+    if smoothing_config is None:
+        return signals
+    return smooth_top_k_signals(signals, smoothing_config)
 
 
 __all__ = [

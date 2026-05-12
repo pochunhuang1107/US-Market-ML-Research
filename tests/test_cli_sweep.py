@@ -76,6 +76,8 @@ def test_run_sweep_from_args_runs_tiny_baseline_sweep(
             "2",
             "--label-horizon-days",
             "20",
+            "--transaction-cost-bps",
+            "10",
         ]
     )
 
@@ -87,6 +89,7 @@ def test_run_sweep_from_args_runs_tiny_baseline_sweep(
     assert (output_dir / "cli_results.csv").exists()
     assert (output_dir / "cli_completed_keys.txt").exists()
     assert results["label_horizon_days"].tolist() == [20, 20, 20]
+    assert results["transaction_cost_bps"].tolist() == [10.0, 10.0, 10.0]
     assert results["scale_target"].tolist() == [False, False, False]
 
 
@@ -129,6 +132,90 @@ def test_run_sweep_from_args_accepts_new_tree_baseline_model_names(
         "extra_trees",
         "random_forest",
     ]
+
+
+def test_run_sweep_from_args_accepts_smoothing_grid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_signal_configs: list[tuple[int, int | None, float | None]] = []
+
+    def fake_run_sweep(config: Any) -> pd.DataFrame:
+        observed_signal_configs.extend(
+            (signal.top_k, signal.min_holding_days, signal.switch_margin)
+            for signal in config.signals
+        )
+        return pd.DataFrame()
+
+    monkeypatch.setattr("us_market_ml.cli.run_sweep.run_sweep", fake_run_sweep)
+
+    return_code = run_sweep_from_args(
+        [
+            "--run-name",
+            "cli_smoothing",
+            "--output-dir",
+            str(tmp_path / "sweeps"),
+            "--universe",
+            "core:data/curated/etf_daily_ohlcv.parquet",
+            "--fold",
+            "fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30",
+            "--model-family",
+            "baseline",
+            "--baseline-models",
+            "ridge",
+            "--top-k",
+            "1",
+            "--min-holding-days",
+            "1,3",
+            "--switch-margins",
+            "0,0.05",
+        ]
+    )
+
+    assert return_code == 0
+    assert observed_signal_configs == [
+        (1, 1, 0.0),
+        (1, 1, 0.05),
+        (1, 3, 0.0),
+        (1, 3, 0.05),
+    ]
+
+
+def test_run_sweep_from_args_accepts_transaction_cost_grid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_transaction_costs: list[float] = []
+
+    def fake_run_sweep(config: Any) -> pd.DataFrame:
+        observed_transaction_costs.extend(config.transaction_cost_bps_values)
+        return pd.DataFrame()
+
+    monkeypatch.setattr("us_market_ml.cli.run_sweep.run_sweep", fake_run_sweep)
+
+    return_code = run_sweep_from_args(
+        [
+            "--run-name",
+            "cli_costs",
+            "--output-dir",
+            str(tmp_path / "sweeps"),
+            "--universe",
+            "core:data/curated/etf_daily_ohlcv.parquet",
+            "--fold",
+            "fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30",
+            "--model-family",
+            "baseline",
+            "--baseline-models",
+            "ridge",
+            "--top-k",
+            "1",
+            "--transaction-cost-bps",
+            "0,5,10",
+        ]
+    )
+
+    assert return_code == 0
+    assert observed_transaction_costs == [0.0, 5.0, 10.0]
 
 
 def test_run_sweep_from_args_accepts_scale_target_for_mlp(
