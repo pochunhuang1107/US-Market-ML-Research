@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -87,6 +88,47 @@ def test_run_sweep_from_args_runs_tiny_baseline_sweep(
     assert (output_dir / "cli_completed_keys.txt").exists()
     assert results["label_horizon_days"].tolist() == [20, 20, 20]
     assert results["scale_target"].tolist() == [False, False, False]
+
+
+def test_run_sweep_from_args_accepts_new_tree_baseline_model_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_model_types: list[str] = []
+
+    def fake_run_sweep(config: Any) -> pd.DataFrame:
+        observed_model_types.extend(model.model_type for model in config.models)
+        return pd.DataFrame()
+
+    monkeypatch.setattr("us_market_ml.cli.run_sweep.run_sweep", fake_run_sweep)
+
+    return_code = run_sweep_from_args(
+        [
+            "--run-name",
+            "cli_tree_names",
+            "--output-dir",
+            str(tmp_path / "sweeps"),
+            "--universe",
+            "core:data/curated/etf_daily_ohlcv.parquet",
+            "--fold",
+            "fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30",
+            "--model-family",
+            "baseline",
+            "--baseline-models",
+            "ridge,linear_regression,gradient_boosting,extra_trees,random_forest",
+            "--top-k",
+            "2",
+        ]
+    )
+
+    assert return_code == 0
+    assert observed_model_types == [
+        "ridge",
+        "linear_regression",
+        "gradient_boosting",
+        "extra_trees",
+        "random_forest",
+    ]
 
 
 def test_run_sweep_from_args_accepts_scale_target_for_mlp(

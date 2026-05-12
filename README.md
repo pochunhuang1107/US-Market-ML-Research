@@ -395,10 +395,14 @@ us-market-ml-sweep \
   --universe core:data/curated/etf_daily_ohlcv.parquet \
   --fold fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30 \
   --model-family baseline \
-  --baseline-models ridge,linear_regression \
+  --baseline-models ridge,linear_regression,gradient_boosting,extra_trees,random_forest \
   --top-k 1,2,3,5 \
   --label-horizon-days 20
 ```
+
+Baseline model types currently supported by the shared supervised baseline
+factory are `ridge`, `linear_regression`, `random_forest`,
+`gradient_boosting`, and `extra_trees`.
 
 MLP example:
 
