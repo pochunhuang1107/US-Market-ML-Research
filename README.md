@@ -46,6 +46,8 @@ This bootstrap includes only the project foundation:
 - A local candidate comparison report that overlays selected MLP and
   baseline/tree candidate OOS curves against SPY, QQQ, and equal-weight
   benchmarks.
+- A local cost sensitivity report that reruns selected candidates over a grid
+  of turnover-based transaction-cost assumptions.
 
 ## Not Included Yet
 
@@ -54,7 +56,7 @@ The following are intentionally not implemented in this task:
 - S3 writing or artifact publishing.
 - Sequence, convolutional, transformer, registry, and artifact-writing model
   infrastructure beyond the first tabular MLP.
-- Transaction-cost, slippage, and order-execution simulation.
+- Spread, slippage, tax, and order-execution simulation.
 - Live trading or brokerage integration.
 - Large notebooks or exploratory artifacts.
 
@@ -419,6 +421,53 @@ those labels to 1, 2, and 3 using the higher of the selection and contribution
 risks. These grades are heuristic research-triage signals only. They are meant
 to make candidate review easier before deeper analysis or possible future
 real-money paper tracking, not to certify that a strategy is safe to trade.
+
+## Cost Sensitivity Report
+
+The cost sensitivity report reruns selected MLP and baseline/tree candidates
+over multiple `transaction_cost_bps` assumptions, stitches the out-of-sample
+test equity curves, and summarizes how candidate performance degrades as costs
+rise. It focuses on candidate strategies only; SPY/QQQ and equal-weight
+benchmarks are not rerun or included in the v1 sensitivity chart.
+
+```bash
+python -m pip install -e ".[dev,nn]"
+
+us-market-ml-cost-sensitivity-report \
+  --data-path data/curated/etf_daily_ohlcv.parquet \
+  --output-dir artifacts/cost_sensitivity \
+  --report-name mixed_shortlist_cost_sensitivity \
+  --fold fold_1:2018-01-01:2020-12-31:2021-01-01:2021-12-31:2022-01-01:2022-12-31 \
+  --fold fold_2:2018-01-01:2021-12-31:2022-01-01:2022-12-31:2023-01-01:2023-12-31 \
+  --fold fold_3:2018-01-01:2022-12-31:2023-01-01:2023-12-31:2024-01-01:2024-12-31 \
+  --candidate baseline:linear_full_top1:linear_regression:1:42 \
+  --candidate mlp:mlp_broad_top5_safe:5:256,128:0.001:0.3:42 \
+  --cost-bps 0,1,2,5,10,20,50 \
+  --scale-target \
+  --max-epochs 120 \
+  --patience 12 \
+  --batch-size 128
+```
+
+The command writes `{report_name}_cost_sensitivity.csv`,
+`{report_name}_cost_sensitivity_pivot.csv`, and
+`{report_name}_cost_sensitivity.png`. The long CSV includes return, Sharpe-like,
+drawdown, final equity, total transaction cost, and turnover metrics for every
+candidate/cost pair. When `0` bps is in the grid, it also reports return and
+final-equity decay versus the no-cost baseline. The pivot CSV creates dynamic
+columns such as `total_return_0bps`, `total_return_10bps`,
+`final_equity_10bps`, and `sharpe_like_10bps`.
+
+The cost model is the same first-order approximation used by the signal
+backtester:
+
+```text
+net return = gross return - turnover x bps / 10000
+```
+
+This is a research approximation, not an execution simulation. It does not
+model bid/ask spreads, intraday fills, market impact, taxes, or broker-specific
+fees.
 
 ## Structured Sweep Runner
 
