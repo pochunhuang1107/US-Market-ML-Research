@@ -33,7 +33,16 @@ CONCENTRATION_REPORT_COLUMNS = [
     *CONTRIBUTION_CONCENTRATION_COLUMNS,
     "concentration_warning",
     "contribution_warning",
+    "selection_concentration_risk",
+    "contribution_concentration_risk",
+    "overall_concentration_risk",
+    "risk_score",
 ]
+RISK_SCORES = {
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+}
 
 
 def calculate_hhi(weights: pd.Series) -> float:
@@ -206,7 +215,34 @@ def build_concentration_report(
         or _metric_float(row["effective_contributing_symbols"]) < 4.0
     )
 
-    return pd.DataFrame([row], columns=CONCENTRATION_REPORT_COLUMNS)
+    report = pd.DataFrame([row])
+    return score_concentration_risk(report).reindex(columns=CONCENTRATION_REPORT_COLUMNS)
+
+
+def score_concentration_risk(
+    concentration_report: pd.DataFrame,
+) -> pd.DataFrame:
+    """Return concentration diagnostics with low/medium/high risk labels."""
+
+    report = concentration_report.copy()
+    selection_risks = report.apply(_score_selection_concentration_risk, axis=1)
+    contribution_risks = report.apply(_score_contribution_concentration_risk, axis=1)
+
+    report["selection_concentration_risk"] = selection_risks
+    report["contribution_concentration_risk"] = contribution_risks
+    report["overall_concentration_risk"] = [
+        _overall_concentration_risk(selection_risk, contribution_risk)
+        for selection_risk, contribution_risk in zip(
+            selection_risks, contribution_risks, strict=True
+        )
+    ]
+    report["risk_score"] = [
+        max(RISK_SCORES[selection_risk], RISK_SCORES[contribution_risk])
+        for selection_risk, contribution_risk in zip(
+            selection_risks, contribution_risks, strict=True
+        )
+    ]
+    return report
 
 
 def _validate_required_columns(
@@ -223,13 +259,83 @@ def _validate_required_columns(
 def _metric_float(value: object) -> float:
     if isinstance(value, Real):
         return float(value)
+    try:
+        converted = pd.to_numeric(value, errors="coerce")
+    except (TypeError, ValueError):
+        return math.nan
+    if isinstance(converted, Real):
+        return float(converted)
     return math.nan
+
+
+def _metric_at_least(value: object, threshold: float) -> bool:
+    metric = _metric_float(value)
+    return not pd.isna(metric) and metric >= threshold
+
+
+def _metric_less_than(value: object, threshold: float) -> bool:
+    metric = _metric_float(value)
+    return not pd.isna(metric) and metric < threshold
+
+
+def _score_selection_concentration_risk(row: pd.Series) -> str:
+    top_symbol_share = row.get("top_symbol_selected_share")
+    top_3_share = row.get("top_3_selected_share")
+    effective_symbols = row.get("effective_selected_symbols")
+    max_weight = row.get("max_avg_target_weight")
+
+    if (
+        _metric_at_least(top_symbol_share, 0.35)
+        or _metric_less_than(effective_symbols, 4.0)
+        or (
+            _metric_at_least(max_weight, 0.95)
+            and _metric_at_least(top_symbol_share, 0.25)
+        )
+    ):
+        return "high"
+    if (
+        _metric_at_least(top_symbol_share, 0.20)
+        or _metric_at_least(top_3_share, 0.60)
+        or _metric_less_than(effective_symbols, 7.0)
+        or _metric_at_least(max_weight, 0.75)
+    ):
+        return "medium"
+    return "low"
+
+
+def _score_contribution_concentration_risk(row: pd.Series) -> str:
+    top_symbol_share = row.get("top_symbol_positive_contribution_share")
+    top_3_share = row.get("top_3_positive_contribution_share")
+    effective_symbols = row.get("effective_contributing_symbols")
+
+    if (
+        _metric_at_least(top_symbol_share, 0.40)
+        or _metric_at_least(top_3_share, 0.80)
+        or _metric_less_than(effective_symbols, 3.5)
+    ):
+        return "high"
+    if (
+        _metric_at_least(top_symbol_share, 0.25)
+        or _metric_at_least(top_3_share, 0.60)
+        or _metric_less_than(effective_symbols, 6.0)
+    ):
+        return "medium"
+    return "low"
+
+
+def _overall_concentration_risk(selection_risk: str, contribution_risk: str) -> str:
+    if "high" in (selection_risk, contribution_risk):
+        return "high"
+    if "medium" in (selection_risk, contribution_risk):
+        return "medium"
+    return "low"
 
 
 __all__ = [
     "CONCENTRATION_REPORT_COLUMNS",
     "calculate_hhi",
     "effective_number_from_hhi",
+    "score_concentration_risk",
     "summarize_selection_concentration",
     "summarize_contribution_concentration",
     "build_concentration_report",

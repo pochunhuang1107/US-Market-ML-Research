@@ -398,6 +398,14 @@ position returns. Warning flags are raised when selection or contribution is
 especially concentrated, which helps identify cases where strong OOS return may
 mostly reflect exposure to one ETF rather than broad rotation skill.
 
+Concentration reports also include `selection_concentration_risk`,
+`contribution_concentration_risk`, `overall_concentration_risk`, and
+`risk_score`. Risk labels are `low`, `medium`, or `high`; `risk_score` maps
+those labels to 1, 2, and 3 using the higher of the selection and contribution
+risks. These grades are heuristic research-triage signals only. They are meant
+to make candidate review easier before deeper analysis or possible future
+real-money paper tracking, not to certify that a strategy is safe to trade.
+
 ## Structured Sweep Runner
 
 The structured sweep runner replaces shell loops and log scraping for longer
