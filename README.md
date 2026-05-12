@@ -380,12 +380,23 @@ is still accepted for backward compatibility.
 
 The top-level output directory receives `{report_name}_candidate_equity.csv`,
 `{report_name}_candidate_metrics.csv`, `{report_name}_candidate_rank.csv`,
-`{report_name}_fold_summary.csv`, and `{report_name}_candidate_equity.png` for
-candidate-only comparison. Each candidate also gets its own subdirectory with
-combined candidate-and-benchmark equity, metrics, fold summary, selected
-holdings, position contributions, holdings summary, contribution summary, daily
-selection summary, equity PNG, selection frequency PNG, contribution by symbol
-PNG, and monthly selection heatmap PNG.
+`{report_name}_concentration_summary.csv`, `{report_name}_fold_summary.csv`,
+and `{report_name}_candidate_equity.png` for candidate-only comparison. Each
+candidate also gets its own subdirectory with combined candidate-and-benchmark
+equity, metrics, fold summary, selected holdings, position contributions,
+holdings summary, contribution summary, concentration report, daily selection
+summary, equity PNG, selection frequency PNG, contribution by symbol PNG, and
+monthly selection heatmap PNG.
+
+The concentration diagnostics quantify whether a high-return candidate is
+fragile because it is dominated by one symbol or a small set of ETFs. Selection
+metrics report top-symbol selection share, top-three selection share, HHI,
+effective selected symbols, and maximum average target weight. Contribution
+metrics report how much of positive return came from the top symbol and top
+three contributors, plus HHI and effective contributing symbols using absolute
+position returns. Warning flags are raised when selection or contribution is
+especially concentrated, which helps identify cases where strong OOS return may
+mostly reflect exposure to one ETF rather than broad rotation skill.
 
 ## Structured Sweep Runner
 
