@@ -27,9 +27,21 @@ def run_sweep_from_args(argv: list[str] | None = None) -> int:
         universes=args.universe,
         folds=args.fold,
         models=models,
-        signals=[SweepSignalConfig(top_k=top_k) for top_k in args.top_k],
+        signals=[
+            SweepSignalConfig(
+                top_k=top_k,
+                min_holding_days=min_holding_days,
+                switch_margin=switch_margin,
+            )
+            for top_k, min_holding_days, switch_margin in product(
+                args.top_k,
+                args.min_holding_days,
+                args.switch_margins,
+            )
+        ],
         target_col=args.target_col,
         label_horizon_days=args.label_horizon_days,
+        transaction_cost_bps_values=args.transaction_cost_bps,
         output_dir=args.output_dir,
         run_name=args.run_name,
         resume=args.resume,
@@ -130,6 +142,16 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--baseline-models", default="ridge,linear_regression")
     parser.add_argument("--top-k", type=parse_int_list, default=parse_int_list("1,2,3,5"))
+    parser.add_argument(
+        "--min-holding-days",
+        type=parse_int_list,
+        default=parse_int_list("1"),
+    )
+    parser.add_argument(
+        "--switch-margins",
+        type=parse_float_list,
+        default=parse_float_list("0"),
+    )
     parser.add_argument("--hidden-units", action="append", type=parse_hidden_units)
     parser.add_argument(
         "--learning-rates",
@@ -149,6 +171,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--target-col", default="excess_return_vs_spy_20d")
     parser.add_argument("--label-horizon-days", type=int, default=0)
+    parser.add_argument(
+        "--transaction-cost-bps",
+        type=parse_float_list,
+        default=parse_float_list("0"),
+    )
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args(argv)
 
@@ -163,6 +190,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--batch-size must be positive.")
     if args.label_horizon_days < 0:
         parser.error("--label-horizon-days must be greater than or equal to 0.")
+    if any(min_holding_days < 1 for min_holding_days in args.min_holding_days):
+        parser.error("--min-holding-days values must be greater than or equal to 1.")
+    if any(switch_margin < 0.0 for switch_margin in args.switch_margins):
+        parser.error("--switch-margins values must be greater than or equal to 0.")
+    if any(transaction_cost_bps < 0.0 for transaction_cost_bps in args.transaction_cost_bps):
+        parser.error("--transaction-cost-bps values must be greater than or equal to 0.")
 
     return args
 

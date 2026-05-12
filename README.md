@@ -222,6 +222,15 @@ cost is `turnover × bps / 10000`. Strategy equity and summary metrics use net
 turnover-based approximation, not a bid/ask spread, slippage, intraday fill,
 tax, or full execution simulator.
 
+Signal generation can optionally apply research-only smoothing before the
+lagged signal backtest. `min_holding_days` keeps selected ETFs for at least a
+minimum number of strategy dates, which can reduce one-day holding churn.
+`switch_margin` requires the best replacement candidate's prediction to clear
+the current holding by a stronger score margin before switching. This smoothing
+logic is portfolio-construction research logic only; it is not an execution
+model and does not change transaction-cost math, fills, slippage, or model
+training.
+
 ## Benchmark Report
 
 The benchmark report CLI reruns one selected local MLP E2E configuration,
@@ -512,6 +521,9 @@ us-market-ml-sweep \
   --model-family baseline \
   --baseline-models ridge,linear_regression,gradient_boosting,extra_trees,random_forest \
   --top-k 1,2,3,5 \
+  --min-holding-days 1,3,5 \
+  --switch-margins 0,0.005,0.01 \
+  --transaction-cost-bps 0,5,10 \
   --label-horizon-days 20
 ```
 
@@ -539,12 +551,24 @@ us-market-ml-sweep \
   --batch-size 64 \
   --scale-target \
   --top-k 1,2,3 \
+  --min-holding-days 1,3 \
+  --switch-margins 0,0.005 \
+  --transaction-cost-bps 0,5,10 \
   --label-horizon-days 20
 ```
 
 For MLP sweeps, `--scale-target` standardizes the target using the training
 split's target mean and standard deviation, then inverse-transforms predictions
 back into original return units before evaluation and backtesting.
+
+Sweep smoothing arguments expand the signal grid across every
+`top_k × min_holding_days × switch_margin` combination. Defaults are
+`--min-holding-days 1` and `--switch-margins 0`, which preserve the original
+unsmoothed top-K behavior.
+
+Transaction-cost sweeps use `--transaction-cost-bps`, also as a comma-separated
+grid. The default is `0`, and nonzero values are passed through to the existing
+turnover-based signal backtester.
 
 Each run writes `{run_name}_results.csv`,
 `{run_name}_completed_keys.txt`, and `{run_name}_failed_keys.txt` under the

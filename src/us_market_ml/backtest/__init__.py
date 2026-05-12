@@ -40,8 +40,10 @@ from us_market_ml.backtest.signal_backtester import (
     summarize_backtest,
 )
 from us_market_ml.backtest.signals import (
+    SignalSmoothingConfig,
     TopKSignalConfig,
     generate_top_k_signals,
+    smooth_top_k_signals,
     summarize_signals,
     validate_signal_weights,
 )
@@ -51,6 +53,7 @@ __all__ = [
     "CONCENTRATION_REPORT_COLUMNS",
     "SignalBacktestConfig",
     "SignalBacktestResult",
+    "SignalSmoothingConfig",
     "TopKSignalConfig",
     "build_buy_and_hold_benchmark",
     "build_concentration_report",
@@ -68,6 +71,7 @@ __all__ = [
     "generate_top_k_signals",
     "run_signal_backtest",
     "score_concentration_risk",
+    "smooth_top_k_signals",
     "summarize_backtest",
     "summarize_contribution_concentration",
     "summarize_equity_series",

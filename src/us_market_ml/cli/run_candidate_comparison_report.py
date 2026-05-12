@@ -13,6 +13,7 @@ import pandas as pd
 from us_market_ml.backtest import (
     BenchmarkConfig,
     SignalBacktestConfig,
+    SignalSmoothingConfig,
     TopKSignalConfig,
     build_buy_and_hold_benchmark,
     build_equal_weight_benchmark,
@@ -384,6 +385,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--batch-size", default=128, type=int)
     parser.add_argument("--label-horizon-days", default=20, type=int)
     parser.add_argument("--transaction-cost-bps", default=0.0, type=float)
+    parser.add_argument("--min-holding-days", default=1, type=int)
+    parser.add_argument("--switch-margin", default=0.0, type=float)
     args = parser.parse_args(argv)
 
     candidate_names = [candidate.name for candidate in args.candidate]
@@ -402,6 +405,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--label-horizon-days must be greater than or equal to 0.")
     if args.transaction_cost_bps < 0.0:
         parser.error("--transaction-cost-bps must be greater than or equal to 0.")
+    if args.min_holding_days < 1:
+        parser.error("--min-holding-days must be greater than or equal to 1.")
+    if args.switch_margin < 0.0:
+        parser.error("--switch-margin must be greater than or equal to 0.")
 
     return args
 
@@ -457,6 +464,7 @@ def _build_mlp_experiment_config(
             initial_equity=1.0,
             transaction_cost_bps=args.transaction_cost_bps,
         ),
+        smoothing_config=_build_smoothing_config(args),
     )
 
 
@@ -489,6 +497,18 @@ def _build_baseline_experiment_config(
             initial_equity=1.0,
             transaction_cost_bps=args.transaction_cost_bps,
         ),
+        smoothing_config=_build_smoothing_config(args),
+    )
+
+
+def _build_smoothing_config(args: argparse.Namespace) -> SignalSmoothingConfig | None:
+    min_holding_days = getattr(args, "min_holding_days", 1)
+    switch_margin = getattr(args, "switch_margin", 0.0)
+    if min_holding_days <= 1 and switch_margin <= 0.0:
+        return None
+    return SignalSmoothingConfig(
+        min_holding_days=min_holding_days,
+        switch_margin=switch_margin,
     )
 
 

@@ -3,17 +3,19 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from us_market_ml.backtest import SignalBacktestConfig, TopKSignalConfig
+from us_market_ml.backtest import SignalBacktestConfig, SignalSmoothingConfig, TopKSignalConfig
 from us_market_ml.data import SupervisedDatasetConfig
 from us_market_ml.experiments import (
     BaselineE2EExperimentConfig,
     BaselineE2EExperimentResult,
     BaselineE2EFoldResult,
     BaselineExperimentConfig,
+    BaselineExperimentResult,
+    BaselineFoldResult,
     run_baseline_e2e_experiment,
     summarize_baseline_e2e_experiment,
 )
-from us_market_ml.models import BaselineModelConfig
+from us_market_ml.models import BaselineFitResult, BaselineModelConfig
 from us_market_ml.splits import WalkForwardFold
 
 
@@ -186,4 +188,104 @@ def test_at_least_one_test_split_has_non_empty_equity_curve() -> None:
 
     assert any(
         not fold_result.test_backtest.equity_curve.empty for fold_result in result.fold_results
+    )
+
+
+def test_e2e_smoothing_config_reduces_switches_in_synthetic_predictions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    predictions = pd.DataFrame(
+        [
+            _prediction_row("2021-01-01", "SPY", 0.9, 100.0),
+            _prediction_row("2021-01-01", "QQQ", 0.1, 100.0),
+            _prediction_row("2021-01-02", "SPY", 0.1, 101.0),
+            _prediction_row("2021-01-02", "QQQ", 0.9, 101.0),
+            _prediction_row("2021-01-03", "SPY", 0.9, 102.0),
+            _prediction_row("2021-01-03", "QQQ", 0.1, 102.0),
+            _prediction_row("2021-01-04", "SPY", 0.1, 103.0),
+            _prediction_row("2021-01-04", "QQQ", 0.9, 103.0),
+        ]
+    )
+
+    fit_result = BaselineFitResult(
+        model_type="ridge",
+        target_col="target",
+        feature_cols=["feature"],
+        train_rows=len(predictions),
+        validation_rows=len(predictions),
+        train_metrics={},
+        validation_metrics={},
+    )
+    baseline_result = BaselineExperimentResult(
+        config=BaselineExperimentConfig(target_col="target"),
+        dataset=predictions,
+        feature_cols=["feature"],
+        fold_results=[
+            BaselineFoldResult(
+                fold_name="fold_1",
+                fit_result=fit_result,
+                train_predictions=predictions,
+                validation_predictions=predictions,
+                test_predictions=predictions,
+            )
+        ],
+    )
+
+    def fake_run_baseline_experiment(*args: object, **kwargs: object) -> BaselineExperimentResult:
+        return baseline_result
+
+    monkeypatch.setattr(
+        "us_market_ml.experiments.baseline_e2e.run_baseline_experiment",
+        fake_run_baseline_experiment,
+    )
+
+    fold = _folds()[:1]
+    unsmoothed = run_baseline_e2e_experiment(
+        predictions,
+        fold,
+        _config(top_k=1),
+    )
+    smoothed = run_baseline_e2e_experiment(
+        predictions,
+        fold,
+        BaselineE2EExperimentConfig(
+            baseline_config=BaselineExperimentConfig(target_col="target"),
+            signal_config=TopKSignalConfig(top_k=1),
+            backtest_config=SignalBacktestConfig(initial_equity=100.0),
+            smoothing_config=SignalSmoothingConfig(min_holding_days=2),
+        ),
+    )
+
+    smoothed_switches = _count_selected_switches(smoothed.fold_results[0].test_signals)
+    unsmoothed_switches = _count_selected_switches(unsmoothed.fold_results[0].test_signals)
+    assert smoothed_switches < unsmoothed_switches
+
+
+def _prediction_row(
+    date: str,
+    symbol: str,
+    prediction: float,
+    close: float,
+) -> dict[str, object]:
+    return {
+        "date": pd.Timestamp(date),
+        "symbol": symbol,
+        "prediction": prediction,
+        "close": close,
+    }
+
+
+def _count_selected_switches(signals: pd.DataFrame) -> int:
+    selected_symbols = (
+        signals.loc[signals["selected"]]
+        .sort_values(["date", "signal_rank"], kind="mergesort")["symbol"]
+        .tolist()
+    )
+    return sum(
+        previous_symbol != current_symbol
+        for previous_symbol, current_symbol in zip(
+            selected_symbols,
+            selected_symbols[1:],
+            strict=False,
+        )
     )

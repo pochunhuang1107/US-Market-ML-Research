@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from us_market_ml.backtest import SignalBacktestConfig, TopKSignalConfig
+from us_market_ml.backtest import SignalBacktestConfig, SignalSmoothingConfig, TopKSignalConfig
 from us_market_ml.data import read_local_market_data
 from us_market_ml.experiments.baseline_e2e import (
     BaselineE2EExperimentConfig,
@@ -52,6 +52,9 @@ RESULT_COLUMNS = [
     "patience",
     "random_state",
     "top_k",
+    "min_holding_days",
+    "switch_margin",
+    "transaction_cost_bps",
     "target_col",
     "label_horizon_days",
     "total_return",
@@ -113,6 +116,16 @@ class SweepSignalConfig:
     """Top-K signal configuration for a sweep."""
 
     top_k: int
+    min_holding_days: int | None = None
+    switch_margin: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.top_k <= 0:
+            raise ValueError("top_k must be positive.")
+        if self.min_holding_days is not None and self.min_holding_days < 1:
+            raise ValueError("min_holding_days must be greater than or equal to 1.")
+        if self.switch_margin is not None and self.switch_margin < 0.0:
+            raise ValueError("switch_margin must be greater than or equal to 0.")
 
 
 @dataclass(frozen=True)
@@ -127,6 +140,9 @@ class SweepRunConfig:
     initial_equity: float = 1.0
     prediction_col: str = "prediction"
     label_horizon_days: int = 0
+    min_holding_days: int = 1
+    switch_margin: float = 0.0
+    transaction_cost_bps_values: list[float] = field(default_factory=lambda: [0.0])
     output_dir: Path | str = "artifacts/sweeps"
     run_name: str = "sweep"
     resume: bool = True
@@ -138,15 +154,26 @@ def build_sweep_run_key(
     model: SweepModelConfig,
     signal: SweepSignalConfig,
     label_horizon_days: int = 0,
+    min_holding_days: int | None = None,
+    switch_margin: float | None = None,
+    transaction_cost_bps: float = 0.0,
 ) -> str:
     """Return a deterministic key for one universe/fold/model/signal run."""
 
+    effective_min_holding_days = _effective_min_holding_days(signal, min_holding_days)
+    effective_switch_margin = _effective_switch_margin(signal, switch_margin)
+    signal_payload = _jsonable_dataclass(signal)
+    signal_payload["min_holding_days"] = effective_min_holding_days
+    signal_payload["switch_margin"] = effective_switch_margin
     payload = {
         "universe": _jsonable_dataclass(universe),
         "fold": _jsonable_dataclass(fold),
         "model": _jsonable_dataclass(model),
-        "signal": _jsonable_dataclass(signal),
+        "signal": signal_payload,
         "label_horizon_days": label_horizon_days,
+        "min_holding_days": effective_min_holding_days,
+        "switch_margin": effective_switch_margin,
+        "transaction_cost_bps": transaction_cost_bps,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:12]
@@ -167,6 +194,9 @@ def build_sweep_run_key(
             f"fold-{_slug(fold.name)}",
             model_part,
             f"topk-{signal.top_k}",
+            f"hold-{effective_min_holding_days}d",
+            f"margin-{effective_switch_margin:g}",
+            f"cost-{transaction_cost_bps:g}bps",
             f"horizon-{label_horizon_days}d",
             f"seed-{model.random_state}",
             digest,
@@ -206,35 +236,40 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
             fold = _to_walk_forward_fold(fold_config)
             for model_config in config.models:
                 for signal_config in config.signals:
-                    run_key = build_sweep_run_key(
-                        universe=universe,
-                        fold=fold_config,
-                        model=model_config,
-                        signal=signal_config,
-                        label_horizon_days=config.label_horizon_days,
-                    )
-                    if config.resume and run_key in completed_keys:
-                        continue
-
-                    try:
-                        run_rows = _run_one_configuration(
-                            raw_df=raw_df,
+                    for transaction_cost_bps in config.transaction_cost_bps_values:
+                        run_key = build_sweep_run_key(
                             universe=universe,
-                            fold=fold,
+                            fold=fold_config,
                             model=model_config,
                             signal=signal_config,
-                            config=config,
-                            run_key=run_key,
+                            label_horizon_days=config.label_horizon_days,
+                            min_holding_days=config.min_holding_days,
+                            switch_margin=config.switch_margin,
+                            transaction_cost_bps=transaction_cost_bps,
                         )
-                    except Exception as exc:  # noqa: BLE001 - continue remaining sweep runs.
-                        _append_failed_key(failed_path, run_key, exc)
-                        continue
+                        if config.resume and run_key in completed_keys:
+                            continue
 
-                    run_results = pd.DataFrame(run_rows, columns=RESULT_COLUMNS)
-                    _append_results(results_path, run_results)
-                    _append_line(completed_path, run_key)
-                    completed_keys.add(run_key)
-                    results_frames.append(run_results)
+                        try:
+                            run_rows = _run_one_configuration(
+                                raw_df=raw_df,
+                                universe=universe,
+                                fold=fold,
+                                model=model_config,
+                                signal=signal_config,
+                                config=config,
+                                run_key=run_key,
+                                transaction_cost_bps=transaction_cost_bps,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - continue remaining sweep runs.
+                            _append_failed_key(failed_path, run_key, exc)
+                            continue
+
+                        run_results = pd.DataFrame(run_rows, columns=RESULT_COLUMNS)
+                        _append_results(results_path, run_results)
+                        _append_line(completed_path, run_key)
+                        completed_keys.add(run_key)
+                        results_frames.append(run_results)
 
     if not results_frames:
         return pd.DataFrame(columns=RESULT_COLUMNS)
@@ -250,6 +285,9 @@ def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:
         "model_family",
         "model_type",
         "top_k",
+        "min_holding_days",
+        "switch_margin",
+        "transaction_cost_bps",
         "hidden_units",
         "learning_rate",
         "dropout",
@@ -268,12 +306,23 @@ def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=summary_columns)
     if "scale_target" not in test_rows.columns:
         test_rows["scale_target"] = False
+    if "min_holding_days" not in test_rows.columns:
+        test_rows["min_holding_days"] = 1
+    if "switch_margin" not in test_rows.columns:
+        test_rows["switch_margin"] = 0.0
+    if "transaction_cost_bps" not in test_rows.columns:
+        test_rows["transaction_cost_bps"] = 0.0
+    else:
+        test_rows["transaction_cost_bps"] = test_rows["transaction_cost_bps"].fillna(0.0)
 
     group_cols = [
         "universe",
         "model_family",
         "model_type",
         "top_k",
+        "min_holding_days",
+        "switch_margin",
+        "transaction_cost_bps",
         "hidden_units",
         "learning_rate",
         "dropout",
@@ -302,11 +351,12 @@ def _run_one_configuration(
     signal: SweepSignalConfig,
     config: SweepRunConfig,
     run_key: str,
+    transaction_cost_bps: float = 0.0,
 ) -> list[dict[str, object]]:
     if model.model_family == "baseline":
-        summary = _run_baseline(raw_df, fold, model, signal, config)
+        summary = _run_baseline(raw_df, fold, model, signal, config, transaction_cost_bps)
     elif model.model_family == "mlp":
-        summary = _run_mlp(raw_df, fold, model, signal, config)
+        summary = _run_mlp(raw_df, fold, model, signal, config, transaction_cost_bps)
     else:
         raise ValueError(f"Unsupported model_family: {model.model_family!r}")
 
@@ -331,6 +381,12 @@ def _run_one_configuration(
                 "patience": model.patience if model.model_family == "mlp" else np.nan,
                 "random_state": model.random_state,
                 "top_k": signal.top_k,
+                "min_holding_days": _effective_min_holding_days(
+                    signal,
+                    config.min_holding_days,
+                ),
+                "switch_margin": _effective_switch_margin(signal, config.switch_margin),
+                "transaction_cost_bps": transaction_cost_bps,
                 "target_col": summary_row["target_col"],
                 "label_horizon_days": config.label_horizon_days,
                 "total_return": summary_row["total_return"],
@@ -351,6 +407,7 @@ def _run_baseline(
     model: SweepModelConfig,
     signal: SweepSignalConfig,
     config: SweepRunConfig,
+    transaction_cost_bps: float,
 ) -> pd.DataFrame:
     experiment_config = BaselineE2EExperimentConfig(
         baseline_config=BaselineExperimentConfig(
@@ -366,7 +423,11 @@ def _run_baseline(
             prediction_col=config.prediction_col,
             top_k=signal.top_k,
         ),
-        backtest_config=SignalBacktestConfig(initial_equity=config.initial_equity),
+        backtest_config=SignalBacktestConfig(
+            initial_equity=config.initial_equity,
+            transaction_cost_bps=transaction_cost_bps,
+        ),
+        smoothing_config=_smoothing_config_from_sweep_signal(signal, config),
     )
     result = run_baseline_e2e_experiment(raw_df, [fold], experiment_config)
     return summarize_baseline_e2e_experiment(result)
@@ -378,6 +439,7 @@ def _run_mlp(
     model: SweepModelConfig,
     signal: SweepSignalConfig,
     config: SweepRunConfig,
+    transaction_cost_bps: float,
 ) -> pd.DataFrame:
     experiment_config = MLPE2EExperimentConfig(
         mlp_config=MLPExperimentConfig(
@@ -401,7 +463,11 @@ def _run_mlp(
             prediction_col=config.prediction_col,
             top_k=signal.top_k,
         ),
-        backtest_config=SignalBacktestConfig(initial_equity=config.initial_equity),
+        backtest_config=SignalBacktestConfig(
+            initial_equity=config.initial_equity,
+            transaction_cost_bps=transaction_cost_bps,
+        ),
+        smoothing_config=_smoothing_config_from_sweep_signal(signal, config),
     )
     result = run_mlp_e2e_experiment(raw_df, [fold], experiment_config)
     return summarize_mlp_e2e_experiment(result)
@@ -418,6 +484,14 @@ def _validate_sweep_config(config: SweepRunConfig) -> None:
         raise ValueError("At least one signal is required.")
     if config.label_horizon_days < 0:
         raise ValueError("label_horizon_days must be greater than or equal to 0.")
+    if config.min_holding_days < 1:
+        raise ValueError("min_holding_days must be greater than or equal to 1.")
+    if config.switch_margin < 0.0:
+        raise ValueError("switch_margin must be greater than or equal to 0.")
+    if not config.transaction_cost_bps_values:
+        raise ValueError("At least one transaction_cost_bps value is required.")
+    if any(value < 0.0 for value in config.transaction_cost_bps_values):
+        raise ValueError("transaction_cost_bps values must be greater than or equal to 0.")
 
 
 def _to_walk_forward_fold(config: SweepFoldConfig) -> WalkForwardFold:
@@ -482,6 +556,43 @@ def _format_hidden_units(model: SweepModelConfig) -> str:
     if model.model_family != "mlp":
         return "none"
     return ",".join(str(unit) for unit in model.hidden_units)
+
+
+def _effective_min_holding_days(
+    signal: SweepSignalConfig,
+    config_min_holding_days: int | None,
+) -> int:
+    if signal.min_holding_days is not None:
+        return signal.min_holding_days
+    if config_min_holding_days is not None:
+        return config_min_holding_days
+    return 1
+
+
+def _effective_switch_margin(
+    signal: SweepSignalConfig,
+    config_switch_margin: float | None,
+) -> float:
+    if signal.switch_margin is not None:
+        return signal.switch_margin
+    if config_switch_margin is not None:
+        return config_switch_margin
+    return 0.0
+
+
+def _smoothing_config_from_sweep_signal(
+    signal: SweepSignalConfig,
+    config: SweepRunConfig,
+) -> SignalSmoothingConfig | None:
+    min_holding_days = _effective_min_holding_days(signal, config.min_holding_days)
+    switch_margin = _effective_switch_margin(signal, config.switch_margin)
+    if min_holding_days <= 1 and switch_margin <= 0.0:
+        return None
+    return SignalSmoothingConfig(
+        min_holding_days=min_holding_days,
+        switch_margin=switch_margin,
+        prediction_col=config.prediction_col,
+    )
 
 
 def _purge_config_from_sweep(config: SweepRunConfig) -> PurgeConfig | None:
