@@ -1,4 +1,4 @@
-"""Generate local MLP candidate deep-dive diagnostic reports."""
+"""Generate local candidate deep-dive diagnostic reports."""
 
 from __future__ import annotations
 
@@ -24,11 +24,12 @@ from us_market_ml.backtest import (
 )
 from us_market_ml.cli.run_benchmark_report import parse_comma_separated_symbols
 from us_market_ml.cli.run_candidate_comparison_report import (
+    FOLD_SUMMARY_COLUMNS,
     CandidateConfig,
     _build_candidate_fold_summary,
     _build_candidate_rank_table,
-    _build_experiment_config,
     _candidate_curve_to_long,
+    _run_candidate_experiment,
     parse_candidate_config,
 )
 from us_market_ml.cli.run_walk_forward_benchmark_report import (
@@ -36,7 +37,6 @@ from us_market_ml.cli.run_walk_forward_benchmark_report import (
     parse_walk_forward_fold,
 )
 from us_market_ml.data import read_local_market_data
-from us_market_ml.experiments import run_mlp_e2e_experiment
 from us_market_ml.visualization import (
     plot_contribution_by_symbol,
     plot_equity_curves,
@@ -59,7 +59,7 @@ class _CandidateDeepDiveData:
 
 
 def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> int:
-    """Run selected local MLP candidates and export full diagnostic packs."""
+    """Run selected local candidates and export full diagnostic packs."""
 
     args = _parse_args(argv)
     market_data = read_local_market_data(args.data_path)
@@ -69,11 +69,7 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
     expected_dates: pd.Series | None = None
 
     for candidate in args.candidate:
-        result = run_mlp_e2e_experiment(
-            raw_df=market_data,
-            folds=folds,
-            config=_build_experiment_config(candidate, args),
-        )
+        result = _run_candidate_experiment(candidate, market_data, folds, args)
         stitched_strategy = stitch_test_equity_curves(
             [
                 (fold_result.fold_name, fold_result.test_backtest.equity_curve)
@@ -136,12 +132,16 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
     candidate_metrics = summarize_equity_series(candidate_equity)
     candidate_rank = _build_candidate_rank_table(
         candidate_metrics,
-        [report_data.candidate.name for report_data in candidate_reports],
+        [report_data.candidate for report_data in candidate_reports],
     )
-    candidate_metrics_output = candidate_metrics.rename(columns={"series_name": "candidate_name"})
-    fold_summary = pd.concat(
-        [report_data.fold_summary for report_data in candidate_reports],
-        ignore_index=True,
+    candidate_metrics_output = candidate_rank.copy()
+    fold_summary = pd.DataFrame(
+        [
+            row
+            for report_data in candidate_reports
+            for row in report_data.fold_summary.to_dict("records")
+        ],
+        columns=FOLD_SUMMARY_COLUMNS,
     )
 
     candidate_equity_path = output_dir / f"{args.report_name}_candidate_equity.csv"
@@ -156,7 +156,7 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
     plot_equity_curves(
         candidate_equity,
         candidate_equity_plot_path,
-        title="MLP Candidate OOS Strategy Equity",
+        title="Candidate OOS Strategy Equity",
     )
 
     print("US Market ML candidate deep-dive report")
@@ -178,7 +178,7 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run selected local MLP walk-forward candidates and export per-candidate "
+            "Run selected local walk-forward candidates and export per-candidate "
             "holdings, contribution, benchmark, and visualization diagnostics."
         )
     )
@@ -202,6 +202,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         required=True,
         help=(
             "Repeatable candidate spec: "
+            "mlp:name:top_k:hidden_units:learning_rate:dropout:random_state, "
+            "baseline:name:model_type:top_k:random_state, or legacy "
             "name:top_k:hidden_units:learning_rate:dropout:random_state"
         ),
     )
