@@ -74,6 +74,8 @@ def test_run_walk_forward_benchmark_report_from_args_writes_outputs(
             "2",
             "--batch-size",
             "16",
+            "--transaction-cost-bps",
+            "5",
         ]
     )
 
@@ -119,5 +121,12 @@ def test_run_walk_forward_benchmark_report_from_args_writes_outputs(
         "strategy_total_return",
         "strategy_max_drawdown",
         "strategy_final_equity",
+        "strategy_total_transaction_cost",
+        "strategy_mean_daily_turnover",
         "epochs_trained",
     }.issubset(fold_summary.columns)
+    assert {
+        "total_transaction_cost",
+        "mean_daily_turnover",
+        "max_daily_turnover",
+    }.issubset(metrics.columns)

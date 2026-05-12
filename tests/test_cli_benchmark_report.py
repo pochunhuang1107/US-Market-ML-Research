@@ -84,6 +84,8 @@ def test_run_benchmark_report_from_args_writes_outputs(
             "2",
             "--batch-size",
             "16",
+            "--transaction-cost-bps",
+            "5",
         ]
     )
 
@@ -102,7 +104,14 @@ def test_run_benchmark_report_from_args_writes_outputs(
     assert plot_path.stat().st_size > 0
     assert set(combined["series_name"]) == {"mlp_strategy", "SPY", "QQQ", "equal_weight"}
     assert set(metrics["series_name"]) == {"mlp_strategy", "SPY", "QQQ", "equal_weight"}
-    assert {"total_return", "max_drawdown", "final_equity"}.issubset(metrics.columns)
+    assert {
+        "total_return",
+        "max_drawdown",
+        "final_equity",
+        "total_transaction_cost",
+        "mean_daily_turnover",
+        "max_daily_turnover",
+    }.issubset(metrics.columns)
 
 
 def test_benchmark_report_parser_helpers() -> None:

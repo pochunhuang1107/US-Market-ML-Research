@@ -7,6 +7,7 @@ import pytest
 from us_market_ml.backtest import (
     SignalBacktestConfig,
     SignalBacktestResult,
+    calculate_daily_turnover,
     calculate_max_drawdown,
     run_signal_backtest,
     summarize_backtest,
@@ -130,6 +131,60 @@ def test_portfolio_return_aggregation_by_date() -> None:
     result = run_signal_backtest(_signal_frame())
 
     assert result.equity_curve["portfolio_return"].tolist() == pytest.approx([0.0, 0.10, 0.10])
+    assert result.equity_curve["gross_portfolio_return"].tolist() == pytest.approx(
+        [0.0, 0.10, 0.10]
+    )
+
+
+def test_no_cost_backtest_matches_gross_behavior() -> None:
+    result = run_signal_backtest(_signal_frame(), SignalBacktestConfig(transaction_cost_bps=0.0))
+
+    assert result.equity_curve["transaction_cost"].tolist() == pytest.approx([0.0, 0.0, 0.0])
+    assert result.equity_curve["portfolio_return"].tolist() == pytest.approx(
+        result.equity_curve["gross_portfolio_return"].tolist()
+    )
+
+
+def test_nonzero_transaction_cost_reduces_portfolio_return() -> None:
+    result = run_signal_backtest(_signal_frame(), SignalBacktestConfig(transaction_cost_bps=10.0))
+
+    assert result.equity_curve["turnover"].tolist() == pytest.approx([0.0, 2.0, 2.0])
+    assert result.equity_curve["transaction_cost"].tolist() == pytest.approx(
+        [0.0, 0.002, 0.002]
+    )
+    assert result.equity_curve["portfolio_return"].tolist() == pytest.approx(
+        [0.0, 0.098, 0.098]
+    )
+
+
+def test_turnover_calculation_uses_target_weight_changes() -> None:
+    turnover = calculate_daily_turnover(_signal_frame())
+
+    assert turnover["date"].tolist() == [
+        pd.Timestamp("2021-01-01"),
+        pd.Timestamp("2021-01-02"),
+        pd.Timestamp("2021-01-03"),
+    ]
+    assert turnover["turnover"].tolist() == pytest.approx([0.0, 2.0, 2.0])
+
+
+def test_first_date_turnover_is_zero() -> None:
+    result = run_signal_backtest(_signal_frame(), SignalBacktestConfig(transaction_cost_bps=5.0))
+
+    assert result.equity_curve.loc[0, "turnover"] == 0.0
+
+
+def test_equity_curve_includes_gross_net_cost_and_turnover_columns() -> None:
+    result = run_signal_backtest(_signal_frame())
+
+    assert result.equity_curve.columns.tolist() == [
+        "date",
+        "gross_portfolio_return",
+        "transaction_cost",
+        "turnover",
+        "portfolio_return",
+        "equity",
+    ]
 
 
 def test_equity_curve_cumulative_math() -> None:
@@ -154,9 +209,15 @@ def test_summary_metrics_include_expected_keys() -> None:
         "sharpe_like",
         "max_drawdown",
         "final_equity",
+        "total_transaction_cost",
+        "mean_daily_turnover",
+        "max_daily_turnover",
     }
     assert result.summary_metrics["final_equity"] == pytest.approx(1.21)
     assert result.summary_metrics["total_return"] == pytest.approx(0.21)
+    assert result.summary_metrics["total_transaction_cost"] == pytest.approx(0.0)
+    assert result.summary_metrics["mean_daily_turnover"] == pytest.approx(4.0 / 3.0)
+    assert result.summary_metrics["max_daily_turnover"] == pytest.approx(2.0)
 
 
 def test_summarize_backtest_uses_configured_column_names() -> None:
@@ -177,6 +238,16 @@ def test_summarize_backtest_uses_configured_column_names() -> None:
 
     assert summary["total_return"] == pytest.approx(0.05)
     assert summary["mean_daily_return"] == pytest.approx(0.025)
+
+
+def test_empty_equity_curve_summary_includes_nan_cost_and_turnover_metrics() -> None:
+    summary = summarize_backtest(
+        pd.DataFrame(columns=["date", "portfolio_return", "equity"])
+    )
+
+    assert np.isnan(summary["total_transaction_cost"])
+    assert np.isnan(summary["mean_daily_turnover"])
+    assert np.isnan(summary["max_daily_turnover"])
 
 
 def test_missing_target_weights_are_treated_as_zero() -> None:
@@ -215,3 +286,8 @@ def test_missing_required_columns_raise_value_error() -> None:
 def test_initial_equity_must_be_positive() -> None:
     with pytest.raises(ValueError, match="initial_equity must be positive"):
         SignalBacktestConfig(initial_equity=0.0)
+
+
+def test_transaction_cost_bps_must_be_non_negative() -> None:
+    with pytest.raises(ValueError, match="transaction_cost_bps"):
+        SignalBacktestConfig(transaction_cost_bps=-0.01)

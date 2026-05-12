@@ -133,6 +133,9 @@ def test_each_fold_has_split_signals_and_backtests() -> None:
                 "sharpe_like",
                 "max_drawdown",
                 "final_equity",
+                "total_transaction_cost",
+                "mean_daily_turnover",
+                "max_daily_turnover",
             }
 
 
@@ -162,6 +165,8 @@ def test_summary_has_one_row_per_fold_per_split() -> None:
         "sharpe_like",
         "max_drawdown",
         "final_equity",
+        "total_transaction_cost",
+        "mean_daily_turnover",
     }.issubset(summary.columns)
 
 

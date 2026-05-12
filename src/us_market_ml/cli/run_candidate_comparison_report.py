@@ -55,6 +55,8 @@ FOLD_SUMMARY_COLUMNS = [
     "strategy_total_return",
     "strategy_max_drawdown",
     "strategy_final_equity",
+    "strategy_total_transaction_cost",
+    "strategy_mean_daily_turnover",
     "epochs_trained",
 ]
 
@@ -381,6 +383,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--patience", default=12, type=int)
     parser.add_argument("--batch-size", default=128, type=int)
     parser.add_argument("--label-horizon-days", default=20, type=int)
+    parser.add_argument("--transaction-cost-bps", default=0.0, type=float)
     args = parser.parse_args(argv)
 
     candidate_names = [candidate.name for candidate in args.candidate]
@@ -397,6 +400,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--batch-size must be positive.")
     if args.label_horizon_days < 0:
         parser.error("--label-horizon-days must be greater than or equal to 0.")
+    if args.transaction_cost_bps < 0.0:
+        parser.error("--transaction-cost-bps must be greater than or equal to 0.")
 
     return args
 
@@ -448,7 +453,10 @@ def _build_mlp_experiment_config(
             purge_config=_build_purge_config(args),
         ),
         signal_config=TopKSignalConfig(top_k=candidate.top_k),
-        backtest_config=SignalBacktestConfig(initial_equity=1.0),
+        backtest_config=SignalBacktestConfig(
+            initial_equity=1.0,
+            transaction_cost_bps=args.transaction_cost_bps,
+        ),
     )
 
 
@@ -477,7 +485,10 @@ def _build_baseline_experiment_config(
             purge_config=_build_purge_config(args),
         ),
         signal_config=TopKSignalConfig(top_k=candidate.top_k),
-        backtest_config=SignalBacktestConfig(initial_equity=1.0),
+        backtest_config=SignalBacktestConfig(
+            initial_equity=1.0,
+            transaction_cost_bps=args.transaction_cost_bps,
+        ),
     )
 
 
@@ -491,11 +502,23 @@ def _candidate_curve_to_long(
     stitched_strategy: pd.DataFrame,
     candidate_name: str,
 ) -> pd.DataFrame:
+    optional_columns = [
+        column
+        for column in ["transaction_cost", "turnover"]
+        if column in stitched_strategy.columns
+    ]
+    output_columns = [
+        "date",
+        "series_name",
+        "daily_return",
+        "equity",
+        *optional_columns,
+    ]
     return (
-        stitched_strategy[["date", "portfolio_return", "equity"]]
+        stitched_strategy[["date", "portfolio_return", "equity", *optional_columns]]
         .copy()
         .rename(columns={"portfolio_return": "daily_return"})
-        .assign(series_name=candidate_name)[["date", "series_name", "daily_return", "equity"]]
+        .assign(series_name=candidate_name)[output_columns]
     )
 
 
@@ -557,6 +580,15 @@ def _build_candidate_rank_table(
     candidate_metrics["rank_by_max_drawdown"] = (
         candidate_metrics["max_drawdown"].rank(method="min", ascending=False).astype("Int64")
     )
+    optional_metric_columns = [
+        column
+        for column in [
+            "total_transaction_cost",
+            "mean_daily_turnover",
+            "max_daily_turnover",
+        ]
+        if column in candidate_metrics.columns
+    ]
     return candidate_metrics[
         [
             "candidate_name",
@@ -566,6 +598,7 @@ def _build_candidate_rank_table(
             "sharpe_like",
             "max_drawdown",
             "final_equity",
+            *optional_metric_columns,
             "rank_by_total_return",
             "rank_by_sharpe_like",
             "rank_by_max_drawdown",
@@ -613,6 +646,8 @@ def _build_candidate_fold_summary(
                 "strategy_total_return": metrics["total_return"],
                 "strategy_max_drawdown": metrics["max_drawdown"],
                 "strategy_final_equity": metrics["final_equity"],
+                "strategy_total_transaction_cost": metrics.get("total_transaction_cost"),
+                "strategy_mean_daily_turnover": metrics.get("mean_daily_turnover"),
                 "epochs_trained": getattr(fit_result, "epochs_trained", float("nan")),
             }
         )

@@ -158,8 +158,15 @@ def combine_strategy_and_benchmarks(
         strategy_equity_curve,
         [date_col, strategy_return_col, strategy_equity_col],
     )
+    optional_columns = [
+        column
+        for column in ["transaction_cost", "turnover"]
+        if column in strategy_equity_curve.columns
+    ]
     frames = [
-        strategy_equity_curve[[date_col, strategy_return_col, strategy_equity_col]]
+        strategy_equity_curve[
+            [date_col, strategy_return_col, strategy_equity_col, *optional_columns]
+        ]
         .copy()
         .rename(
             columns={
@@ -179,6 +186,8 @@ def combine_strategy_and_benchmarks(
         benchmark_long = benchmark_curve[
             ["date", "benchmark_name", "benchmark_return", "benchmark_equity"]
         ].copy()
+        for column in optional_columns:
+            benchmark_long[column] = np.nan
         benchmark_long = benchmark_long.rename(
             columns={
                 "benchmark_name": "series_name",
@@ -189,9 +198,8 @@ def combine_strategy_and_benchmarks(
         frames.append(benchmark_long)
 
     combined = pd.concat(frames, ignore_index=True)
-    return combined[
-        ["date", "series_name", "daily_return", "equity"]
-    ].sort_values(
+    output_columns = ["date", "series_name", "daily_return", "equity", *optional_columns]
+    return combined[output_columns].sort_values(
         by=["date", "series_name"],
         kind="mergesort",
     ).reset_index(drop=True)
@@ -207,14 +215,33 @@ def stitch_test_equity_curves(
 ) -> pd.DataFrame:
     """Stitch non-overlapping fold test curves into one OOS equity curve."""
 
-    output_columns = [date_col, output_return_col, output_equity_col, "source_fold"]
+    optional_columns = [
+        column
+        for _, curve in fold_curves
+        for column in ["gross_portfolio_return", "transaction_cost", "turnover"]
+        if column in curve.columns
+    ]
+    optional_columns = list(dict.fromkeys(optional_columns))
+    output_columns = [
+        date_col,
+        *optional_columns,
+        output_return_col,
+        output_equity_col,
+        "source_fold",
+    ]
     if not fold_curves:
         return pd.DataFrame(columns=output_columns)
 
     frames: list[pd.DataFrame] = []
     for fold_name, curve in fold_curves:
         _validate_required_columns(curve, [date_col, return_col, equity_col])
-        frame = curve[[date_col, return_col]].copy()
+        available_optional_columns = [
+            column for column in optional_columns if column in curve.columns
+        ]
+        frame = curve[[date_col, return_col, *available_optional_columns]].copy()
+        for column in optional_columns:
+            if column not in frame.columns:
+                frame[column] = np.nan
         frame[date_col] = pd.to_datetime(frame[date_col])
         frame["source_fold"] = fold_name
         frames.append(frame)
@@ -242,9 +269,7 @@ def stitch_test_equity_curves(
     stitched_returns.loc[stitched_returns.index[0], output_return_col] = 0.0
     stitched_returns[output_equity_col] = (1.0 + stitched_returns[output_return_col]).cumprod()
 
-    return stitched_returns[
-        [date_col, output_return_col, output_equity_col, "source_fold"]
-    ].reset_index(drop=True)
+    return stitched_returns[output_columns].reset_index(drop=True)
 
 
 def summarize_equity_series(
@@ -253,6 +278,8 @@ def summarize_equity_series(
     """Return daily summary metrics for each long-format equity series."""
 
     _validate_required_columns(combined_equity, ["date", "series_name", "daily_return", "equity"])
+    has_transaction_cost = "transaction_cost" in combined_equity.columns
+    has_turnover = "turnover" in combined_equity.columns
     metric_columns = [
         "series_name",
         "total_return",
@@ -262,6 +289,10 @@ def summarize_equity_series(
         "max_drawdown",
         "final_equity",
     ]
+    if has_transaction_cost:
+        metric_columns.append("total_transaction_cost")
+    if has_turnover:
+        metric_columns.extend(["mean_daily_turnover", "max_daily_turnover"])
     if combined_equity.empty:
         return pd.DataFrame(columns=metric_columns)
 
@@ -281,17 +312,21 @@ def summarize_equity_series(
             if daily_volatility > 0.0 and not np.isnan(daily_volatility)
             else np.nan
         )
-        rows.append(
-            {
-                "series_name": series_name,
-                "total_return": final_equity / first_equity - 1.0,
-                "mean_daily_return": mean_daily_return,
-                "daily_volatility": daily_volatility,
-                "sharpe_like": float(sharpe_like),
-                "max_drawdown": calculate_max_drawdown(series_df["equity"]),
-                "final_equity": final_equity,
-            }
-        )
+        row = {
+            "series_name": series_name,
+            "total_return": final_equity / first_equity - 1.0,
+            "mean_daily_return": mean_daily_return,
+            "daily_volatility": daily_volatility,
+            "sharpe_like": float(sharpe_like),
+            "max_drawdown": calculate_max_drawdown(series_df["equity"]),
+            "final_equity": final_equity,
+        }
+        if has_transaction_cost:
+            row["total_transaction_cost"] = _sum_or_nan(series_df["transaction_cost"])
+        if has_turnover:
+            row["mean_daily_turnover"] = _mean_or_nan(series_df["turnover"])
+            row["max_daily_turnover"] = _max_or_nan(series_df["turnover"])
+        rows.append(row)
 
     return pd.DataFrame(rows, columns=metric_columns)
 
@@ -301,6 +336,27 @@ def _validate_required_columns(df: pd.DataFrame, required_columns: list[str]) ->
     if missing_columns:
         missing = ", ".join(missing_columns)
         raise ValueError(f"Input DataFrame is missing required benchmark columns: {missing}")
+
+
+def _sum_or_nan(series: pd.Series) -> float:
+    values = pd.to_numeric(series, errors="coerce").dropna()
+    if values.empty:
+        return np.nan
+    return float(values.sum())
+
+
+def _mean_or_nan(series: pd.Series) -> float:
+    values = pd.to_numeric(series, errors="coerce").dropna()
+    if values.empty:
+        return np.nan
+    return float(values.mean())
+
+
+def _max_or_nan(series: pd.Series) -> float:
+    values = pd.to_numeric(series, errors="coerce").dropna()
+    if values.empty:
+        return np.nan
+    return float(values.max())
 
 
 __all__ = [

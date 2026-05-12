@@ -236,6 +236,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--patience", default=12, type=int)
     parser.add_argument("--batch-size", default=128, type=int)
     parser.add_argument("--label-horizon-days", default=20, type=int)
+    parser.add_argument("--transaction-cost-bps", default=0.0, type=float)
     args = parser.parse_args(argv)
 
     candidate_names = [candidate.name for candidate in args.candidate]
@@ -252,6 +253,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--batch-size must be positive.")
     if args.label_horizon_days < 0:
         parser.error("--label-horizon-days must be greater than or equal to 0.")
+    if args.transaction_cost_bps < 0.0:
+        parser.error("--transaction-cost-bps must be greater than or equal to 0.")
 
     return args
 

@@ -72,7 +72,10 @@ def run_walk_forward_benchmark_report_from_args(argv: list[str] | None = None) -
             ),
         ),
         signal_config=TopKSignalConfig(top_k=args.top_k),
-        backtest_config=SignalBacktestConfig(initial_equity=1.0),
+        backtest_config=SignalBacktestConfig(
+            initial_equity=1.0,
+            transaction_cost_bps=args.transaction_cost_bps,
+        ),
     )
 
     result = run_mlp_e2e_experiment(
@@ -251,6 +254,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--batch-size", default=128, type=int)
     parser.add_argument("--random-state", default=42, type=int)
     parser.add_argument("--label-horizon-days", default=20, type=int)
+    parser.add_argument("--transaction-cost-bps", default=0.0, type=float)
     args = parser.parse_args(argv)
 
     if args.top_k <= 0:
@@ -263,6 +267,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--batch-size must be positive.")
     if args.label_horizon_days < 0:
         parser.error("--label-horizon-days must be greater than or equal to 0.")
+    if args.transaction_cost_bps < 0.0:
+        parser.error("--transaction-cost-bps must be greater than or equal to 0.")
 
     return args
 
@@ -304,6 +310,8 @@ def _build_fold_summary(
                 "strategy_total_return": metrics["total_return"],
                 "strategy_max_drawdown": metrics["max_drawdown"],
                 "strategy_final_equity": metrics["final_equity"],
+                "strategy_total_transaction_cost": metrics.get("total_transaction_cost"),
+                "strategy_mean_daily_turnover": metrics.get("mean_daily_turnover"),
                 "epochs_trained": mlp_fold_result.fit_result.epochs_trained,
             }
         )
@@ -317,6 +325,8 @@ def _build_fold_summary(
             "strategy_total_return",
             "strategy_max_drawdown",
             "strategy_final_equity",
+            "strategy_total_transaction_cost",
+            "strategy_mean_daily_turnover",
             "epochs_trained",
         ],
     )

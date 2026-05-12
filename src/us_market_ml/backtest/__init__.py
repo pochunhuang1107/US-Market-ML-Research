@@ -27,6 +27,7 @@ from us_market_ml.backtest.holdings_report import (
 from us_market_ml.backtest.signal_backtester import (
     SignalBacktestConfig,
     SignalBacktestResult,
+    calculate_daily_turnover,
     calculate_max_drawdown,
     run_signal_backtest,
     summarize_backtest,
@@ -50,6 +51,7 @@ __all__ = [
     "build_equal_weight_benchmark",
     "build_position_contribution_frame",
     "build_selected_holdings_frame",
+    "calculate_daily_turnover",
     "calculate_hhi",
     "calculate_max_drawdown",
     "combine_strategy_and_benchmarks",
