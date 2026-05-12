@@ -335,6 +335,46 @@ total return, Sharpe-like, drawdown, final equity, and metric ranks,
 `{report_name}_fold_summary.csv` with per-candidate test-fold summaries, and
 `{report_name}_equity.png` with the combined static equity chart.
 
+## Candidate Deep-dive Report
+
+After a sweep and candidate comparison identify a shortlist, the candidate
+deep-dive report reruns those selected MLP candidates and writes a full
+diagnostic pack for each one. It uses only stitched OOS test curves for
+performance comparison, verifies candidate test dates align, computes
+benchmarks over the shared OOS date range, and adds holdings, contribution,
+daily selection, and static visualization outputs for every candidate. This is
+local-only in v1 and does not write model artifacts, model transaction costs or
+slippage, compare baseline models, or create a web UI.
+
+```bash
+python -m pip install -e ".[dev,nn]"
+
+us-market-ml-candidate-deep-dive-report \
+  --data-path data/curated/etf_daily_ohlcv.parquet \
+  --output-dir artifacts/candidate_deep_dives \
+  --report-name mlp_v1_shortlist_deep_dive \
+  --fold fold_1:2018-01-01:2020-12-31:2021-01-01:2021-12-31:2022-01-01:2022-12-31 \
+  --fold fold_2:2018-01-01:2021-12-31:2022-01-01:2022-12-31:2023-01-01:2023-12-31 \
+  --fold fold_3:2018-01-01:2022-12-31:2023-01-01:2023-12-31:2024-01-01:2024-12-31 \
+  --candidate sharpe_top3:3:256,128:0.0005:0.2:42 \
+  --candidate return_top1:1:128,64:0.001:0.1:43 \
+  --benchmark-symbols SPY,QQQ \
+  --universe-symbols SPY,QQQ,TLT,IWM \
+  --scale-target \
+  --max-epochs 120 \
+  --patience 12 \
+  --batch-size 128
+```
+
+The top-level output directory receives `{report_name}_candidate_equity.csv`,
+`{report_name}_candidate_metrics.csv`, `{report_name}_candidate_rank.csv`,
+`{report_name}_fold_summary.csv`, and `{report_name}_candidate_equity.png` for
+candidate-only comparison. Each candidate also gets its own subdirectory with
+combined candidate-and-benchmark equity, metrics, fold summary, selected
+holdings, position contributions, holdings summary, contribution summary, daily
+selection summary, equity PNG, selection frequency PNG, contribution by symbol
+PNG, and monthly selection heatmap PNG.
+
 ## Structured Sweep Runner
 
 The structured sweep runner replaces shell loops and log scraping for longer
