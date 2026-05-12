@@ -1,4 +1,4 @@
-"""Generate local MLP candidate comparison reports."""
+"""Generate local candidate comparison reports."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -26,30 +27,54 @@ from us_market_ml.cli.run_benchmark_report import (
 from us_market_ml.cli.run_walk_forward_benchmark_report import parse_walk_forward_fold
 from us_market_ml.data import read_local_market_data
 from us_market_ml.experiments import (
+    BaselineE2EExperimentConfig,
+    BaselineE2EExperimentResult,
+    BaselineExperimentConfig,
     MLPE2EExperimentConfig,
     MLPE2EExperimentResult,
     MLPExperimentConfig,
+    run_baseline_e2e_experiment,
     run_mlp_e2e_experiment,
 )
-from us_market_ml.models import MLPRegressorConfig
+from us_market_ml.models import BaselineModelConfig, MLPRegressorConfig
 from us_market_ml.splits import PurgeConfig, WalkForwardFold
 from us_market_ml.visualization import plot_equity_curves
+
+FOLD_SUMMARY_COLUMNS = [
+    "candidate_name",
+    "candidate_family",
+    "model_type",
+    "fold_name",
+    "test_start",
+    "test_end",
+    "selected_top_k",
+    "hidden_units",
+    "learning_rate",
+    "dropout",
+    "random_state",
+    "strategy_total_return",
+    "strategy_max_drawdown",
+    "strategy_final_equity",
+    "epochs_trained",
+]
 
 
 @dataclass(frozen=True)
 class CandidateConfig:
-    """One named MLP strategy candidate selected for side-by-side comparison."""
+    """One named strategy candidate selected for side-by-side comparison."""
 
+    family: str
     name: str
     top_k: int
-    hidden_units: tuple[int, ...]
-    learning_rate: float
-    dropout: float
     random_state: int
+    model_type: str | None = None
+    hidden_units: tuple[int, ...] | None = None
+    learning_rate: float | None = None
+    dropout: float | None = None
 
 
 def run_candidate_comparison_report_from_args(argv: list[str] | None = None) -> int:
-    """Run selected local MLP candidates and export an OOS comparison report."""
+    """Run selected local candidates and export an OOS comparison report."""
 
     args = _parse_args(argv)
     market_data = read_local_market_data(args.data_path)
@@ -60,11 +85,7 @@ def run_candidate_comparison_report_from_args(argv: list[str] | None = None) -> 
     expected_dates: pd.Series | None = None
 
     for candidate in args.candidate:
-        result = run_mlp_e2e_experiment(
-            raw_df=market_data,
-            folds=folds,
-            config=_build_experiment_config(candidate, args),
-        )
+        result = _run_candidate_experiment(candidate, market_data, folds, args)
         stitched_strategy = stitch_test_equity_curves(
             [
                 (fold_result.fold_name, fold_result.test_backtest.equity_curve)
@@ -116,9 +137,15 @@ def run_candidate_comparison_report_from_args(argv: list[str] | None = None) -> 
     ).sort_values(by=["date", "series_name"], kind="mergesort")
     combined_equity = combined_equity.reset_index(drop=True)
     metrics = summarize_equity_series(combined_equity)
-    candidate_names = [candidate.name for candidate in args.candidate]
-    candidate_rank = _build_candidate_rank_table(metrics, candidate_names)
-    fold_summary = pd.concat(fold_summaries, ignore_index=True)
+    candidate_rank = _build_candidate_rank_table(metrics, args.candidate)
+    fold_summary = pd.DataFrame(
+        [
+            row
+            for candidate_fold_summary in fold_summaries
+            for row in candidate_fold_summary.to_dict("records")
+        ],
+        columns=FOLD_SUMMARY_COLUMNS,
+    )
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -134,7 +161,7 @@ def run_candidate_comparison_report_from_args(argv: list[str] | None = None) -> 
     plot_equity_curves(
         combined_equity,
         plot_path,
-        title="MLP Candidate Strategy Comparison vs Benchmarks",
+        title="Candidate Strategy Comparison vs Benchmarks",
     )
 
     print("US Market ML candidate comparison report")
@@ -154,13 +181,61 @@ def run_candidate_comparison_report_from_args(argv: list[str] | None = None) -> 
 def parse_candidate_config(value: str) -> CandidateConfig:
     """Parse a candidate spec from CLI text."""
 
-    parts = value.split(":")
-    if len(parts) != 6 or any(not part.strip() for part in parts):
+    parts = [part.strip() for part in value.split(":")]
+    if any(not part for part in parts):
+        raise argparse.ArgumentTypeError("Candidate values must be non-empty.")
+
+    if len(parts) == 7:
+        return _parse_mlp_candidate_config(parts, original_value=value)
+    if len(parts) == 5:
+        return _parse_baseline_candidate_config(parts, original_value=value)
+    if len(parts) == 6:
+        return _parse_legacy_mlp_candidate_config(parts, original_value=value)
+
+    if parts and parts[0] not in {"mlp", "baseline"}:
         raise argparse.ArgumentTypeError(
-            "Candidate must use format "
-            "name:top_k:hidden_units:learning_rate:dropout:random_state."
+            "Candidate family must be one of {'mlp', 'baseline'}."
         )
 
+    raise argparse.ArgumentTypeError(
+        "Candidate must use format "
+        "mlp:name:top_k:hidden_units:learning_rate:dropout:random_state, "
+        "baseline:name:model_type:top_k:random_state, or legacy "
+        "name:top_k:hidden_units:learning_rate:dropout:random_state."
+    )
+
+
+def _parse_mlp_candidate_config(
+    parts: list[str],
+    *,
+    original_value: str,
+) -> CandidateConfig:
+    (
+        family,
+        name,
+        top_k_value,
+        hidden_units_value,
+        learning_rate_value,
+        dropout_value,
+        random_state_value,
+    ) = parts
+    _validate_candidate_family(family)
+    return _build_mlp_candidate_config(
+        name=name,
+        top_k_value=top_k_value,
+        hidden_units_value=hidden_units_value,
+        learning_rate_value=learning_rate_value,
+        dropout_value=dropout_value,
+        random_state_value=random_state_value,
+        original_value=original_value,
+    )
+
+
+def _parse_legacy_mlp_candidate_config(
+    parts: list[str],
+    *,
+    original_value: str,
+) -> CandidateConfig:
     (
         name,
         top_k_value,
@@ -168,7 +243,28 @@ def parse_candidate_config(value: str) -> CandidateConfig:
         learning_rate_value,
         dropout_value,
         random_state_value,
-    ) = (part.strip() for part in parts)
+    ) = parts
+    return _build_mlp_candidate_config(
+        name=name,
+        top_k_value=top_k_value,
+        hidden_units_value=hidden_units_value,
+        learning_rate_value=learning_rate_value,
+        dropout_value=dropout_value,
+        random_state_value=random_state_value,
+        original_value=original_value,
+    )
+
+
+def _build_mlp_candidate_config(
+    *,
+    name: str,
+    top_k_value: str,
+    hidden_units_value: str,
+    learning_rate_value: str,
+    dropout_value: str,
+    random_state_value: str,
+    original_value: str,
+) -> CandidateConfig:
     if not name:
         raise argparse.ArgumentTypeError("candidate name must be non-empty.")
 
@@ -179,7 +275,7 @@ def parse_candidate_config(value: str) -> CandidateConfig:
         dropout = float(dropout_value)
         random_state = int(random_state_value)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"Invalid candidate value: {value!r}") from exc
+        raise argparse.ArgumentTypeError(f"Invalid candidate value: {original_value!r}") from exc
 
     if top_k <= 0:
         raise argparse.ArgumentTypeError("candidate top_k must be positive.")
@@ -189,19 +285,57 @@ def parse_candidate_config(value: str) -> CandidateConfig:
         raise argparse.ArgumentTypeError("candidate dropout must satisfy 0 <= dropout < 1.")
 
     return CandidateConfig(
+        family="mlp",
         name=name,
         top_k=top_k,
+        random_state=random_state,
         hidden_units=hidden_units,
         learning_rate=learning_rate,
         dropout=dropout,
-        random_state=random_state,
     )
+
+
+def _parse_baseline_candidate_config(
+    parts: list[str],
+    *,
+    original_value: str,
+) -> CandidateConfig:
+    family, name, model_type, top_k_value, random_state_value = parts
+    _validate_candidate_family(family)
+    if not name:
+        raise argparse.ArgumentTypeError("candidate name must be non-empty.")
+    if not model_type:
+        raise argparse.ArgumentTypeError("baseline candidate model_type must be non-empty.")
+
+    try:
+        top_k = int(top_k_value)
+        random_state = int(random_state_value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid candidate value: {original_value!r}") from exc
+
+    if top_k <= 0:
+        raise argparse.ArgumentTypeError("candidate top_k must be positive.")
+
+    return CandidateConfig(
+        family="baseline",
+        name=name,
+        top_k=top_k,
+        random_state=random_state,
+        model_type=model_type,
+    )
+
+
+def _validate_candidate_family(family: str) -> None:
+    if family not in {"mlp", "baseline"}:
+        raise argparse.ArgumentTypeError(
+            "Candidate family must be one of {'mlp', 'baseline'}."
+        )
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run selected local MLP walk-forward candidates and export an "
+            "Run selected local walk-forward candidates and export an "
             "out-of-sample benchmark comparison report."
         )
     )
@@ -225,6 +359,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         required=True,
         help=(
             "Repeatable candidate spec: "
+            "mlp:name:top_k:hidden_units:learning_rate:dropout:random_state, "
+            "baseline:name:model_type:top_k:random_state, or legacy "
             "name:top_k:hidden_units:learning_rate:dropout:random_state"
         ),
     )
@@ -265,10 +401,37 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return args
 
 
-def _build_experiment_config(
+def _run_candidate_experiment(
+    candidate: CandidateConfig,
+    market_data: pd.DataFrame,
+    folds: list[WalkForwardFold],
+    args: argparse.Namespace,
+) -> MLPE2EExperimentResult | BaselineE2EExperimentResult:
+    if candidate.family == "mlp":
+        return run_mlp_e2e_experiment(
+            raw_df=market_data,
+            folds=folds,
+            config=_build_mlp_experiment_config(candidate, args),
+        )
+    if candidate.family == "baseline":
+        return run_baseline_e2e_experiment(
+            raw_df=market_data,
+            folds=folds,
+            config=_build_baseline_experiment_config(candidate, args),
+        )
+    raise ValueError(f"Unsupported candidate family: {candidate.family!r}")
+
+
+def _build_mlp_experiment_config(
     candidate: CandidateConfig,
     args: argparse.Namespace,
 ) -> MLPE2EExperimentConfig:
+    if (
+        candidate.hidden_units is None
+        or candidate.learning_rate is None
+        or candidate.dropout is None
+    ):
+        raise ValueError("MLP candidates require hidden_units, learning_rate, and dropout.")
     return MLPE2EExperimentConfig(
         mlp_config=MLPExperimentConfig(
             target_col=args.target_col,
@@ -282,15 +445,46 @@ def _build_experiment_config(
                 random_state=candidate.random_state,
                 scale_target=args.scale_target,
             ),
-            purge_config=(
-                PurgeConfig(label_horizon_days=args.label_horizon_days)
-                if args.label_horizon_days > 0
-                else None
-            ),
+            purge_config=_build_purge_config(args),
         ),
         signal_config=TopKSignalConfig(top_k=candidate.top_k),
         backtest_config=SignalBacktestConfig(initial_equity=1.0),
     )
+
+
+def _build_experiment_config(
+    candidate: CandidateConfig,
+    args: argparse.Namespace,
+) -> MLPE2EExperimentConfig:
+    """Build an MLP experiment config for legacy MLP-only report callers."""
+
+    return _build_mlp_experiment_config(candidate, args)
+
+
+def _build_baseline_experiment_config(
+    candidate: CandidateConfig,
+    args: argparse.Namespace,
+) -> BaselineE2EExperimentConfig:
+    if candidate.model_type is None:
+        raise ValueError("Baseline candidates require model_type.")
+    return BaselineE2EExperimentConfig(
+        baseline_config=BaselineExperimentConfig(
+            target_col=args.target_col,
+            model_config=BaselineModelConfig(
+                model_type=candidate.model_type,
+                random_state=candidate.random_state,
+            ),
+            purge_config=_build_purge_config(args),
+        ),
+        signal_config=TopKSignalConfig(top_k=candidate.top_k),
+        backtest_config=SignalBacktestConfig(initial_equity=1.0),
+    )
+
+
+def _build_purge_config(args: argparse.Namespace) -> PurgeConfig | None:
+    if args.label_horizon_days <= 0:
+        return None
+    return PurgeConfig(label_horizon_days=args.label_horizon_days)
 
 
 def _candidate_curve_to_long(
@@ -321,10 +515,39 @@ def _benchmark_curve_to_long(benchmark_curve: pd.DataFrame) -> pd.DataFrame:
 
 def _build_candidate_rank_table(
     metrics: pd.DataFrame,
-    candidate_names: list[str],
+    candidates: list[CandidateConfig] | list[str],
 ) -> pd.DataFrame:
+    candidate_names = [
+        candidate.name if isinstance(candidate, CandidateConfig) else candidate
+        for candidate in candidates
+    ]
     candidate_metrics = metrics.loc[metrics["series_name"].isin(candidate_names)].copy()
     candidate_metrics = candidate_metrics.rename(columns={"series_name": "candidate_name"})
+    metadata_rows: list[dict[str, str]] = []
+    for candidate in candidates:
+        if isinstance(candidate, CandidateConfig):
+            metadata_rows.append(
+                {
+                    "candidate_name": candidate.name,
+                    "candidate_family": candidate.family,
+                    "model_type": _candidate_model_type_label(candidate),
+                }
+            )
+        else:
+            metadata_rows.append(
+                {
+                    "candidate_name": candidate,
+                    "candidate_family": "mlp",
+                    "model_type": "mlp",
+                }
+            )
+    candidate_metadata = pd.DataFrame(metadata_rows)
+    candidate_metrics = candidate_metrics.merge(
+        candidate_metadata,
+        on="candidate_name",
+        how="left",
+        validate="one_to_one",
+    )
     candidate_metrics["rank_by_total_return"] = (
         candidate_metrics["total_return"].rank(method="min", ascending=False).astype("Int64")
     )
@@ -337,6 +560,8 @@ def _build_candidate_rank_table(
     return candidate_metrics[
         [
             "candidate_name",
+            "candidate_family",
+            "model_type",
             "total_return",
             "sharpe_like",
             "max_drawdown",
@@ -353,16 +578,13 @@ def _build_candidate_rank_table(
 
 def _build_candidate_fold_summary(
     candidate: CandidateConfig,
-    result: MLPE2EExperimentResult,
+    result: MLPE2EExperimentResult | BaselineE2EExperimentResult,
     folds: list[WalkForwardFold],
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
-    for fold_result, mlp_fold_result, fold in zip(
-        result.fold_results,
-        result.mlp_result.fold_results,
-        folds,
-        strict=True,
-    ):
+    fold_results = _candidate_fold_results(candidate, result)
+    fit_results = _candidate_fit_results(candidate, result)
+    for fold_result, fit_result, fold in zip(fold_results, fit_results, folds, strict=True):
         equity_curve = fold_result.test_backtest.equity_curve
         metrics = summarize_backtest(equity_curve, SignalBacktestConfig(initial_equity=1.0))
         if equity_curve.empty:
@@ -374,39 +596,65 @@ def _build_candidate_fold_summary(
         rows.append(
             {
                 "candidate_name": candidate.name,
+                "candidate_family": candidate.family,
+                "model_type": _candidate_model_type_label(candidate),
                 "fold_name": fold_result.fold_name,
                 "test_start": test_start,
                 "test_end": test_end,
                 "selected_top_k": candidate.top_k,
-                "hidden_units": ",".join(str(unit) for unit in candidate.hidden_units),
+                "hidden_units": (
+                    ",".join(str(unit) for unit in candidate.hidden_units)
+                    if candidate.hidden_units is not None
+                    else None
+                ),
                 "learning_rate": candidate.learning_rate,
                 "dropout": candidate.dropout,
                 "random_state": candidate.random_state,
                 "strategy_total_return": metrics["total_return"],
                 "strategy_max_drawdown": metrics["max_drawdown"],
                 "strategy_final_equity": metrics["final_equity"],
-                "epochs_trained": mlp_fold_result.fit_result.epochs_trained,
+                "epochs_trained": getattr(fit_result, "epochs_trained", float("nan")),
             }
         )
 
     return pd.DataFrame(
         rows,
-        columns=[
-            "candidate_name",
-            "fold_name",
-            "test_start",
-            "test_end",
-            "selected_top_k",
-            "hidden_units",
-            "learning_rate",
-            "dropout",
-            "random_state",
-            "strategy_total_return",
-            "strategy_max_drawdown",
-            "strategy_final_equity",
-            "epochs_trained",
-        ],
+        columns=FOLD_SUMMARY_COLUMNS,
     )
+
+
+def _candidate_fit_results(
+    candidate: CandidateConfig,
+    result: MLPE2EExperimentResult | BaselineE2EExperimentResult,
+) -> list[Any]:
+    if candidate.family == "mlp":
+        if not isinstance(result, MLPE2EExperimentResult):
+            raise TypeError("MLP candidate received non-MLP result.")
+        return [fold_result.fit_result for fold_result in result.mlp_result.fold_results]
+    if candidate.family == "baseline":
+        if not isinstance(result, BaselineE2EExperimentResult):
+            raise TypeError("Baseline candidate received non-baseline result.")
+        return [fold_result.fit_result for fold_result in result.baseline_result.fold_results]
+    raise ValueError(f"Unsupported candidate family: {candidate.family!r}")
+
+
+def _candidate_fold_results(
+    candidate: CandidateConfig,
+    result: MLPE2EExperimentResult | BaselineE2EExperimentResult,
+) -> list[Any]:
+    if candidate.family == "mlp":
+        if not isinstance(result, MLPE2EExperimentResult):
+            raise TypeError("MLP candidate received non-MLP result.")
+        return list(result.fold_results)
+    if candidate.family == "baseline":
+        if not isinstance(result, BaselineE2EExperimentResult):
+            raise TypeError("Baseline candidate received non-baseline result.")
+        return list(result.fold_results)
+    raise ValueError(f"Unsupported candidate family: {candidate.family!r}")
+
+
+def _candidate_model_type_label(candidate: CandidateConfig) -> str:
+    return candidate.model_type if candidate.model_type is not None else "mlp"
 
 
 def _filter_oos_period(
