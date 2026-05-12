@@ -1,13 +1,27 @@
-"""Selected holdings and contribution reports for MLP walk-forward results."""
+"""Selected holdings and contribution reports for walk-forward fold results."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from typing import Protocol
 
 import pandas as pd
 
-if TYPE_CHECKING:
-    from us_market_ml.experiments.mlp_e2e import MLPE2EFoldResult
+
+class _SignalBacktestLike(Protocol):
+    @property
+    def position_returns(self) -> pd.DataFrame: ...
+
+
+class _E2EFoldResultLike(Protocol):
+    @property
+    def fold_name(self) -> str: ...
+
+    @property
+    def test_signals(self) -> pd.DataFrame: ...
+
+    @property
+    def test_backtest(self) -> _SignalBacktestLike: ...
 
 
 SELECTED_HOLDINGS_COLUMNS = [
@@ -64,7 +78,7 @@ DAILY_SELECTION_SUMMARY_COLUMNS = [
 
 
 def build_selected_holdings_frame(
-    fold_results: list[MLPE2EFoldResult],
+    fold_results: Sequence[_E2EFoldResultLike],
 ) -> pd.DataFrame:
     """Return selected test-signal holdings across walk-forward folds.
 
@@ -106,7 +120,7 @@ def build_selected_holdings_frame(
 
 
 def build_position_contribution_frame(
-    fold_results: list[MLPE2EFoldResult],
+    fold_results: Sequence[_E2EFoldResultLike],
 ) -> pd.DataFrame:
     """Return test-period position contribution rows across folds."""
 
@@ -243,7 +257,7 @@ def build_daily_selection_summary(
 
 
 def _selected_holdings_output_columns(
-    fold_results: list[MLPE2EFoldResult],
+    fold_results: Sequence[_E2EFoldResultLike],
 ) -> list[str]:
     columns = list(SELECTED_HOLDINGS_COLUMNS)
     for optional_column in OPTIONAL_SELECTED_HOLDINGS_COLUMNS:

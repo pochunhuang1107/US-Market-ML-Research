@@ -65,9 +65,9 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
             "--fold",
             "fold_2:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-05-31",
             "--candidate",
-            "sharpe_top3:3:16:0.001:0.0:42",
+            "baseline:linear_top1:linear_regression:1:42",
             "--candidate",
-            "return_top1:1:16:0.001:0.0:43",
+            "mlp:mlp_top1:1:16:0.001:0.0:43",
             "--max-epochs",
             "5",
             "--patience",
@@ -83,7 +83,9 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
     candidate_equity_path = output_dir / "deep_dive_candidate_equity.csv"
     candidate_equity_plot_path = output_dir / "deep_dive_candidate_equity.png"
     fold_summary_path = output_dir / "deep_dive_fold_summary.csv"
+    candidate_metrics = pd.read_csv(candidate_metrics_path)
     candidate_rank = pd.read_csv(candidate_rank_path)
+    fold_summary = pd.read_csv(fold_summary_path)
 
     assert return_code == 0
     assert "candidate deep-dive report" in captured.out
@@ -93,13 +95,28 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
     assert candidate_equity_plot_path.exists()
     assert fold_summary_path.exists()
     assert candidate_equity_plot_path.stat().st_size > 0
-    assert set(candidate_rank["candidate_name"]) == {"sharpe_top3", "return_top1"}
+    assert set(candidate_metrics["candidate_name"]) == {"linear_top1", "mlp_top1"}
+    assert set(candidate_rank["candidate_name"]) == {"linear_top1", "mlp_top1"}
+    assert set(candidate_rank["candidate_family"]) == {"baseline", "mlp"}
+    assert set(fold_summary["candidate_name"]) == {"linear_top1", "mlp_top1"}
+    assert set(fold_summary["candidate_family"]) == {"baseline", "mlp"}
+    assert fold_summary.loc[
+        fold_summary["candidate_family"] == "baseline", "epochs_trained"
+    ].isna().all()
 
-    for candidate_name in ("sharpe_top3", "return_top1"):
+    for candidate_name in ("linear_top1", "mlp_top1"):
         candidate_dir = output_dir / candidate_name
+        combined_equity_path = candidate_dir / f"{candidate_name}_combined_equity.csv"
         metrics_path = candidate_dir / f"{candidate_name}_metrics.csv"
+        selected_holdings_path = candidate_dir / f"{candidate_name}_selected_holdings.csv"
+        position_contributions_path = (
+            candidate_dir / f"{candidate_name}_position_contributions.csv"
+        )
         holdings_summary_path = candidate_dir / f"{candidate_name}_holdings_summary.csv"
         contribution_summary_path = candidate_dir / f"{candidate_name}_contribution_summary.csv"
+        daily_selection_summary_path = (
+            candidate_dir / f"{candidate_name}_daily_selection_summary.csv"
+        )
         equity_path = candidate_dir / f"{candidate_name}_equity.png"
         selection_frequency_path = candidate_dir / f"{candidate_name}_selection_frequency.png"
         contribution_by_symbol_path = (
@@ -109,9 +126,14 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
             candidate_dir / f"{candidate_name}_monthly_selection_heatmap.png"
         )
 
+        assert candidate_dir.exists()
+        assert combined_equity_path.exists()
         assert metrics_path.exists()
+        assert selected_holdings_path.exists()
+        assert position_contributions_path.exists()
         assert holdings_summary_path.exists()
         assert contribution_summary_path.exists()
+        assert daily_selection_summary_path.exists()
         assert equity_path.exists()
         assert selection_frequency_path.exists()
         assert contribution_by_symbol_path.exists()
