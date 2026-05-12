@@ -44,27 +44,57 @@ def _synthetic_etf_ohlcv() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_parse_candidate_config() -> None:
-    candidate = parse_candidate_config("broad_top3:3:256,128:0.0005:0.2:42")
+def test_parse_candidate_config_new_mlp_format() -> None:
+    candidate = parse_candidate_config("mlp:broad_top3:3:256,128:0.0005:0.2:42")
 
     assert candidate == CandidateConfig(
+        family="mlp",
         name="broad_top3",
         top_k=3,
+        random_state=42,
         hidden_units=(256, 128),
         learning_rate=0.0005,
         dropout=0.2,
+    )
+
+
+def test_parse_candidate_config_baseline_format() -> None:
+    candidate = parse_candidate_config("baseline:linear_full_top1:linear_regression:1:42")
+
+    assert candidate == CandidateConfig(
+        family="baseline",
+        name="linear_full_top1",
+        top_k=1,
         random_state=42,
+        model_type="linear_regression",
+    )
+
+
+def test_parse_candidate_config_legacy_mlp_format() -> None:
+    candidate = parse_candidate_config("broad_top3:3:256,128:0.0005:0.2:42")
+
+    assert candidate == CandidateConfig(
+        family="mlp",
+        name="broad_top3",
+        top_k=3,
+        random_state=42,
+        hidden_units=(256, 128),
+        learning_rate=0.0005,
+        dropout=0.2,
     )
 
 
 @pytest.mark.parametrize(
     "value,match",
     [
-        ("missing:parts", "Candidate must use format"),
+        ("missing:parts", "Candidate family must be one"),
+        ("cnn:bad_family:1:16:0.001:0.0:42", "Candidate family must be one"),
+        ("baseline:bad_family:ridge:1:42:extra", "Invalid candidate value"),
         ("bad_top_k:0:16:0.001:0.0:42", "top_k must be positive"),
         ("bad_hidden:1:16,0:0.001:0.0:42", "hidden units must be positive"),
         ("bad_lr:1:16:0.0:0.0:42", "learning_rate must be positive"),
         ("bad_dropout:1:16:0.001:1.0:42", "dropout must satisfy"),
+        ("baseline:bad_top_k:ridge:0:42", "top_k must be positive"),
     ],
 )
 def test_parse_candidate_config_validates(value: str, match: str) -> None:
@@ -86,9 +116,9 @@ def test_duplicate_candidate_names_fail(tmp_path: Path) -> None:
                 "--fold",
                 "fold_1:2020-01-01:2020-09-30:2020-10-01:2020-12-31:2021-01-01:2021-02-28",
                 "--candidate",
-                "candidate:1:16:0.001:0.0:42",
+                "mlp:candidate:1:16:0.001:0.0:42",
                 "--candidate",
-                "candidate:2:16:0.001:0.0:43",
+                "baseline:candidate:linear_regression:2:43",
             ]
         )
 
@@ -118,9 +148,9 @@ def test_run_candidate_comparison_report_from_args_writes_outputs(
             "--fold",
             "fold_2:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-05-31",
             "--candidate",
-            "top1:1:16:0.001:0.0:42",
+            "mlp:mlp_top1:1:16:0.001:0.0:42",
             "--candidate",
-            "top2:2:16:0.001:0.0:43",
+            "baseline:linear_top1:linear_regression:1:42",
             "--max-epochs",
             "5",
             "--patience",
@@ -149,11 +179,13 @@ def test_run_candidate_comparison_report_from_args_writes_outputs(
     assert fold_summary_path.exists()
     assert plot_path.exists()
     assert plot_path.stat().st_size > 0
-    assert set(combined["series_name"]) == {"top1", "top2", "SPY", "QQQ", "equal_weight"}
-    assert set(metrics["series_name"]) == {"top1", "top2", "SPY", "QQQ", "equal_weight"}
-    assert set(candidate_rank["candidate_name"]) == {"top1", "top2"}
+    assert set(combined["series_name"]) == {"mlp_top1", "linear_top1", "SPY", "QQQ", "equal_weight"}
+    assert set(metrics["series_name"]) == {"mlp_top1", "linear_top1", "SPY", "QQQ", "equal_weight"}
+    assert set(candidate_rank["candidate_name"]) == {"mlp_top1", "linear_top1"}
     assert {
         "candidate_name",
+        "candidate_family",
+        "model_type",
         "total_return",
         "sharpe_like",
         "max_drawdown",
@@ -162,5 +194,27 @@ def test_run_candidate_comparison_report_from_args_writes_outputs(
         "rank_by_sharpe_like",
         "rank_by_max_drawdown",
     }.issubset(candidate_rank.columns)
-    assert set(fold_summary["candidate_name"]) == {"top1", "top2"}
+    assert set(candidate_rank["candidate_family"]) == {"mlp", "baseline"}
+    assert set(fold_summary["candidate_name"]) == {"mlp_top1", "linear_top1"}
+    assert {
+        "candidate_name",
+        "candidate_family",
+        "model_type",
+        "fold_name",
+        "test_start",
+        "test_end",
+        "selected_top_k",
+        "hidden_units",
+        "learning_rate",
+        "dropout",
+        "random_state",
+        "strategy_total_return",
+        "strategy_max_drawdown",
+        "strategy_final_equity",
+        "epochs_trained",
+    }.issubset(fold_summary.columns)
+    assert set(fold_summary["candidate_family"]) == {"mlp", "baseline"}
+    assert fold_summary.loc[
+        fold_summary["candidate_family"] == "baseline", "epochs_trained"
+    ].isna().all()
     assert fold_summary["fold_name"].tolist() == ["fold_1", "fold_2", "fold_1", "fold_2"]
