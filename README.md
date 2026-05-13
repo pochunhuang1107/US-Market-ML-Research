@@ -506,6 +506,49 @@ The command writes `{export_name}_daily_targets.csv`,
 the comparison and deep-dive reports, including optional per-candidate
 `min_holding_days:switch_margin` smoothing suffixes.
 
+## Daily Model Signal Export
+
+The daily model signal export is the local paper-tracking artifact path for
+platform ingestion. It reruns one selected research candidate through the
+existing feature, model, ranking, and smoothing workflow, then writes a compact
+runtime-safe signal artifact plus manifest for the latest available signal
+date. This remains research-only output: it is not live trading advice, not a
+broker integration, not scheduling, and not an order/execution system.
+
+```bash
+python -m pip install -e ".[dev,nn]"
+
+us-market-ml-daily-signal-export \
+  --data-path data/curated/etf_daily_ohlcv.parquet \
+  --output-dir artifacts/model_signals \
+  --candidate baseline:linear_smooth10_margin002:linear_regression:1:42:10:0.002 \
+  --model-version linear_smooth10_margin002_v1 \
+  --feature-set-version default_features_v1 \
+  --train-start 2018-01-01 \
+  --train-end 2022-12-31 \
+  --validation-start 2023-01-01 \
+  --validation-end 2023-12-31 \
+  --label-horizon-days 20 \
+  --format parquet \
+  --merge-existing
+```
+
+The command writes:
+
+```text
+artifacts/model_signals/model_version=<VERSION>/signals.parquet
+artifacts/model_signals/model_version=<VERSION>/model_signal_manifest.json
+```
+
+Use `--latest-date` to export a specific available signal date, or omit it to
+use the max date in the local market data. Use `--lookback-start` when you want
+to refresh a short trailing window before merging into the existing artifact.
+The artifact keeps runtime-safe fields such as `date`, `symbol`,
+`model_version`, `score`, `predicted_return`, `rank`, `signal_bucket`,
+`feature_set_version`, `label_horizon_days`, and `created_at`; supervised
+future/realized/target return columns are not exported. S3 publishing is a
+later platform/ops step and is intentionally not part of this v1 command.
+
 ## Candidate Model Card
 
 The candidate model card turns a candidate deep-dive output folder into a
