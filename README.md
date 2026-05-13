@@ -470,6 +470,43 @@ fixed-bps cost assumptions dominate performance and can also point to practical
 issues that this research backtester does not model, including spread,
 slippage, tax, and execution timing.
 
+## Candidate Model Card
+
+The candidate model card turns a candidate deep-dive output folder into a
+single Markdown research note. It summarizes configuration, OOS performance,
+SPY comparison, fold behavior, optional transaction-cost sensitivity, top
+holdings, top contributors, concentration diagnostics, holding-period
+diagnostics, strengths, weaknesses, and a deterministic research-triage verdict.
+
+```bash
+python -m pip install -e ".[dev,nn]"
+
+us-market-ml-model-card \
+  --candidate-dir artifacts/candidate_deep_dives/linear_smooth10_margin002 \
+  --candidate-name linear_smooth10_margin002 \
+  --candidate-family baseline \
+  --model-type linear_regression \
+  --output-path artifacts/model_cards/linear_smooth10_margin002_model_card.md \
+  --config-json '{"top_k": 1, "random_state": 42, "min_holding_days": 10, "switch_margin": 0.002}' \
+  --cost-sensitivity-path artifacts/cost_sensitivity/mixed_shortlist_cost_sensitivity.csv
+```
+
+The command reads the per-candidate CSVs produced by the deep-dive report:
+`{candidate_name}_metrics.csv`, `{candidate_name}_fold_summary.csv`,
+`{candidate_name}_concentration_report.csv`,
+`{candidate_name}_holding_period_summary.csv`,
+`{candidate_name}_holdings_summary.csv`, and
+`{candidate_name}_contribution_summary.csv`. If `--cost-sensitivity-path` is
+provided, matching rows from the cost sensitivity CSV are included as an
+additional table. The model card does not rerun training or backtests, does not
+use S3, and does not create PDFs.
+
+The verdict is a research-triage label only:
+`promising_for_further_research`, `needs_more_validation`, or
+`not_currently_promising`. It is based on simple SPY-relative performance,
+drawdown, and concentration checks. Model cards are documentation for research
+review and possible paper-trading preparation, not financial or trading advice.
+
 ## Cost Sensitivity Report
 
 The cost sensitivity report reruns selected MLP and baseline/tree candidates

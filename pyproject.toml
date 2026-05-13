@@ -32,6 +32,7 @@ us-market-ml-walk-forward-benchmark-report = "us_market_ml.cli.run_walk_forward_
 us-market-ml-candidate-comparison-report = "us_market_ml.cli.run_candidate_comparison_report:run_candidate_comparison_report_from_args"
 us-market-ml-candidate-deep-dive-report = "us_market_ml.cli.run_candidate_deep_dive_report:run_candidate_deep_dive_report_from_args"
 us-market-ml-cost-sensitivity-report = "us_market_ml.cli.run_cost_sensitivity_report:run_cost_sensitivity_report_from_args"
+us-market-ml-model-card = "us_market_ml.cli.run_model_card:run_model_card_from_args"
 
 [project.optional-dependencies]
 dev = [
