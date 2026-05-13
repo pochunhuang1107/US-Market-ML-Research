@@ -51,6 +51,8 @@ This bootstrap includes only the project foundation:
   tradable or passive enough for further research.
 - A local cost sensitivity report that reruns selected candidates over a grid
   of turnover-based transaction-cost assumptions.
+- A research-only paper-tracking export that writes daily target holdings,
+  switch logs, and tracking-window metrics for one selected local candidate.
 
 ## Not Included Yet
 
@@ -469,6 +471,40 @@ strategy dates. High average turnover or clustered high-turnover days can make
 fixed-bps cost assumptions dominate performance and can also point to practical
 issues that this research backtester does not model, including spread,
 slippage, tax, and execution timing.
+
+## Paper-tracking Export
+
+The paper-tracking export reruns one selected candidate over a single local
+tracking window and writes daily research CSVs showing model predictions,
+selected symbols, target weights, switch days, and backtest metrics. This
+export is for paper tracking and research validation only, not live trading
+advice. It does not connect to a broker, place orders, schedule jobs, ingest
+live data, or model execution beyond the existing lagged close-to-close
+research backtest.
+
+```bash
+python -m pip install -e ".[dev,nn]"
+
+us-market-ml-paper-tracking-export \
+  --data-path data/curated/etf_daily_ohlcv.parquet \
+  --output-dir artifacts/paper_tracking \
+  --export-name linear_smooth10_margin002_tracking \
+  --candidate baseline:linear_smooth10_margin002:linear_regression:1:42:10:0.002 \
+  --train-start 2018-01-01 \
+  --train-end 2022-12-31 \
+  --validation-start 2023-01-01 \
+  --validation-end 2023-12-31 \
+  --tracking-start 2024-01-01 \
+  --tracking-end 2024-12-31 \
+  --benchmark-symbols SPY,QQQ \
+  --transaction-cost-bps 10
+```
+
+The command writes `{export_name}_daily_targets.csv`,
+`{export_name}_daily_summary.csv`, `{export_name}_switch_log.csv`, and
+`{export_name}_metrics.csv`. Candidate specs use the same unified formats as
+the comparison and deep-dive reports, including optional per-candidate
+`min_holding_days:switch_margin` smoothing suffixes.
 
 ## Candidate Model Card
 
