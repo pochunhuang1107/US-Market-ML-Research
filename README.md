@@ -53,6 +53,8 @@ This bootstrap includes only the project foundation:
   of turnover-based transaction-cost assumptions.
 - A research-only paper-tracking export that writes daily target holdings,
   switch logs, and tracking-window metrics for one selected local candidate.
+- A model signal artifact export that writes point-in-time runtime-compatible
+  signal files for the downstream simulation platform.
 
 ## Not Included Yet
 
@@ -505,6 +507,62 @@ The command writes `{export_name}_daily_targets.csv`,
 `{export_name}_metrics.csv`. Candidate specs use the same unified formats as
 the comparison and deep-dive reports, including optional per-candidate
 `min_holding_days:switch_margin` smoothing suffixes.
+
+## Model Signal Artifact Export
+
+The model signal artifact export is the bridge from this ML research/training
+repo to the downstream `US-Market-Simulation-Platform`. It exports
+point-in-time model signal rows that the platform can validate, load, and use
+as an input signal layer while the platform continues to execute deterministic
+Strategy V2 configs. The platform should not train models or run live
+inference.
+
+The export writes runtime signal data only: `date`, `symbol`, `model_version`,
+`score`, and optional metadata such as `predicted_return`, `rank`,
+`signal_bucket`, `feature_set_version`, `label_horizon_days`, and
+`created_at`. It does not export training labels, target columns, future
+returns, or realized returns.
+
+Preferred layout:
+
+```text
+curated/model_signals/model_version=<VERSION>/signals.parquet
+```
+
+Example for the current paper-tracking candidate:
+
+```bash
+python -m pip install -e ".[dev,nn]"
+
+us-market-ml-model-signal-export \
+  --data-path data/curated/etf_daily_ohlcv.parquet \
+  --output-path curated/model_signals/model_version=linear_smooth10_margin002_v1/signals.parquet \
+  --candidate baseline:linear_smooth10_margin002:linear_regression:1:42:10:0.002 \
+  --model-version linear_smooth10_margin002_v1 \
+  --feature-set-version default_features_v1 \
+  --train-start 2018-01-01 \
+  --train-end 2022-12-31 \
+  --validation-start 2023-01-01 \
+  --validation-end 2023-12-31 \
+  --export-start 2024-01-01 \
+  --export-end 2024-12-31 \
+  --label-horizon-days 20
+```
+
+For smoothed candidates, the artifact is built from post-smoothing
+`test_signals`, so `linear_smooth10_margin002_v1` exports the actual
+point-in-time strategy signal. In v1, `score` and `predicted_return` are both
+the model `prediction`, `rank` is `signal_rank`, and `signal_bucket` is `top`
+for selected rows and `other` for non-selected rows. This is research-only
+point-in-time signal data, not investment advice or an order/execution system.
+
+The simulation platform can validate an exported artifact with:
+
+```bash
+python scripts/validate_model_signal_export.py \
+  --path <signals.parquet> \
+  --model-version <MODEL_VERSION>
+```
 
 ## Candidate Model Card
 
