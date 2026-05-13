@@ -199,6 +199,15 @@ def _cost_sensitivity_section(
         lines.append("No cost sensitivity rows matched this candidate.")
         return "\n\n".join(lines)
 
+    if "cost_bps" in sensitivity.columns:
+        sensitivity = sensitivity.assign(
+            cost_bps=pd.to_numeric(sensitivity["cost_bps"], errors="coerce")
+        )
+    if "total_return" in sensitivity.columns:
+        sensitivity = sensitivity.assign(
+            total_return=pd.to_numeric(sensitivity["total_return"], errors="coerce")
+        )
+
     display_columns = [
         column
         for column in [
@@ -209,7 +218,6 @@ def _cost_sensitivity_section(
             "final_equity",
             "total_transaction_cost",
             "mean_daily_turnover",
-            "return_decay_vs_0bps",
         ]
         if column in sensitivity.columns
     ]
@@ -218,11 +226,153 @@ def _cost_sensitivity_section(
         kind="mergesort",
     )
     rows = [
-        tuple(_format_table_cell(column, row[column]) for column in display_columns)
+        tuple(_format_cost_sensitivity_cell(column, row[column]) for column in display_columns)
         for _, row in sensitivity.loc[:, display_columns].iterrows()
     ]
     lines.append(_markdown_table(display_columns, rows))
+    lines.append(_cost_robustness_summary(sensitivity))
     return "\n\n".join(lines)
+
+
+def _cost_robustness_summary(sensitivity: pd.DataFrame) -> str:
+    if not {"cost_bps", "total_return"}.issubset(sensitivity.columns):
+        return (
+            "Cost robustness label: **fragile**\n\n"
+            "The cost sensitivity table is missing cost_bps or total_return, so no "
+            "break-even grid summary could be estimated."
+        )
+
+    tested = sensitivity.loc[:, ["cost_bps", "total_return"]].dropna()
+    if tested.empty:
+        return (
+            "Cost robustness label: **fragile**\n\n"
+            "No valid tested cost levels with total returns were available for a "
+            "break-even grid summary."
+        )
+
+    tested = tested.sort_values("cost_bps", kind="mergesort")
+    positive = tested.loc[tested["total_return"] > 0.0]
+    non_positive = tested.loc[tested["total_return"] <= 0.0]
+
+    highest_positive = (
+        _format_bps(positive["cost_bps"].max()) if not positive.empty else "not observed"
+    )
+    first_negative = (
+        _format_bps(non_positive["cost_bps"].min())
+        if not non_positive.empty
+        else "not observed"
+    )
+
+    summary_rows = [
+        ("highest_positive_cost_bps", highest_positive),
+        ("first_negative_cost_bps", first_negative),
+    ]
+    for target_bps in [10.0, 20.0, 50.0]:
+        target_return = _return_at_exact_bps(tested, target_bps)
+        if target_return is not None:
+            summary_rows.append(
+                (f"return_at_{_format_bps(target_bps)}bps", _format_percent(target_return))
+            )
+
+    label, label_basis, used_nearest = _cost_robustness_label(tested)
+    break_even_note = _break_even_note(highest_positive, first_negative)
+    grid_note = (
+        " The label is based on the nearest available tested grid levels because "
+        "one or more 5/10/20 bps thresholds were not tested exactly."
+        if used_nearest
+        else ""
+    )
+    notes = [
+        f"Cost robustness label: **{label}** ({label_basis}).{grid_note}",
+        break_even_note,
+        _cost_plain_english_note(label),
+    ]
+    return (
+        "Cost robustness summary:\n\n"
+        + _two_column_table("Metric", "Value", summary_rows)
+        + "\n\nRobustness notes:\n\n"
+        + _bullet_list(notes)
+    )
+
+
+def _cost_robustness_label(tested: pd.DataFrame) -> tuple[str, str, bool]:
+    five = _return_for_threshold(tested, 5.0)
+    ten = _return_for_threshold(tested, 10.0)
+    twenty = _return_for_threshold(tested, 20.0)
+    used_nearest = five[2] or ten[2] or twenty[2]
+
+    if twenty[1] > 0.0:
+        return "high", f"positive return at {_format_bps(twenty[0])} bps", used_nearest
+    if ten[1] > 0.0:
+        return (
+            "medium",
+            f"positive return at {_format_bps(ten[0])} bps but not {_format_bps(twenty[0])} bps",
+            used_nearest,
+        )
+    if five[1] > 0.0:
+        return (
+            "low",
+            f"positive return at {_format_bps(five[0])} bps but not {_format_bps(ten[0])} bps",
+            used_nearest,
+        )
+    return (
+        "fragile",
+        f"not positive at the {_format_bps(five[0])} bps tested threshold",
+        used_nearest,
+    )
+
+
+def _return_for_threshold(tested: pd.DataFrame, target_bps: float) -> tuple[float, float, bool]:
+    exact = tested.loc[tested["cost_bps"] == target_bps]
+    if not exact.empty:
+        return target_bps, float(exact.iloc[0]["total_return"]), False
+
+    nearest_idx = (tested["cost_bps"] - target_bps).abs().idxmin()
+    nearest = tested.loc[nearest_idx]
+    return float(nearest["cost_bps"]), float(nearest["total_return"]), True
+
+
+def _return_at_exact_bps(tested: pd.DataFrame, target_bps: float) -> float | None:
+    exact = tested.loc[tested["cost_bps"] == target_bps]
+    if exact.empty:
+        return None
+    return float(exact.iloc[0]["total_return"])
+
+
+def _break_even_note(highest_positive: str, first_negative: str) -> str:
+    if highest_positive == "not observed":
+        return "Break-even status: no tested cost level had positive total return."
+    if first_negative == "not observed":
+        return (
+            "Break-even status: not observed on the tested grid; total return stayed "
+            f"positive through {highest_positive} bps."
+        )
+    return (
+        "Break-even status: approximate break-even lies between "
+        f"{highest_positive} bps and {first_negative} bps on the tested grid."
+    )
+
+
+def _cost_plain_english_note(label: str) -> str:
+    notes = {
+        "high": (
+            "Plain-English robustness: the candidate has meaningful cushion against "
+            "moderate transaction-cost assumptions in this diagnostic grid."
+        ),
+        "medium": (
+            "Plain-English robustness: the candidate tolerates light costs, but the "
+            "edge weakens before moderate transaction-cost assumptions."
+        ),
+        "low": (
+            "Plain-English robustness: the candidate only clears a very light cost "
+            "assumption and should be treated as cost-sensitive."
+        ),
+        "fragile": (
+            "Plain-English robustness: the candidate does not show a positive edge "
+            "under the tested cost threshold used for this label."
+        ),
+    }
+    return notes[label]
 
 
 def _holdings_and_contributors_section(
@@ -512,6 +662,18 @@ def _format_table_cell(column: str, value: object) -> str:
     return _format_object(value)
 
 
+def _format_cost_sensitivity_cell(column: str, value: object) -> str:
+    if column in {"total_return", "max_drawdown", "mean_daily_turnover"}:
+        return _format_percent(value)
+    if column == "sharpe_like":
+        return _format_number(value, decimals=4)
+    if column == "cost_bps":
+        return _format_bps(value)
+    if column in {"final_equity", "total_transaction_cost"}:
+        return _format_number(value)
+    return _format_table_cell(column, value)
+
+
 def _format_delta(candidate_value: object, benchmark_value: object) -> str:
     candidate_number = _metric_float(candidate_value)
     benchmark_number = _metric_float(benchmark_value)
@@ -540,6 +702,15 @@ def _format_number(value: object, decimals: int = 4) -> str:
     if pd.isna(number):
         return "n/a"
     return f"{number:.{decimals}f}"
+
+
+def _format_bps(value: object) -> str:
+    number = _metric_float(value)
+    if pd.isna(number):
+        return "n/a"
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.4f}".rstrip("0").rstrip(".")
 
 
 def _format_object(value: object) -> str:

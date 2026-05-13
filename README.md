@@ -497,9 +497,14 @@ The command reads the per-candidate CSVs produced by the deep-dive report:
 `{candidate_name}_holding_period_summary.csv`,
 `{candidate_name}_holdings_summary.csv`, and
 `{candidate_name}_contribution_summary.csv`. If `--cost-sensitivity-path` is
-provided, matching rows from the cost sensitivity CSV are included as an
-additional table. The model card does not rerun training or backtests, does not
-use S3, and does not create PDFs.
+provided, matching rows from the optional cost sensitivity CSV are included as a
+Markdown table with tested bps levels, total return, Sharpe-like, drawdown,
+final equity, transaction cost, and turnover when those columns are available.
+The card also adds a deterministic cost robustness summary, including the
+highest tested cost with positive total return, the first non-positive tested
+cost when observed, selected 10/20/50 bps returns when present, and a
+high/medium/low/fragile label based on the tested grid. The model card does not
+rerun training or backtests, does not use S3, and does not create PDFs.
 
 The verdict is a research-triage label only:
 `promising_for_further_research`, `needs_more_validation`, or
