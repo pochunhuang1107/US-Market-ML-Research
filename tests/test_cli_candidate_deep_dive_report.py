@@ -135,7 +135,10 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
     assert {
         "strategy_total_transaction_cost",
         "strategy_mean_daily_turnover",
+        "min_holding_days",
+        "switch_margin",
     }.issubset(fold_summary.columns)
+    assert {"min_holding_days", "switch_margin"}.issubset(candidate_rank.columns)
     assert {
         "total_transaction_cost",
         "mean_daily_turnover",
@@ -199,3 +202,50 @@ def test_run_candidate_deep_dive_report_from_args_writes_outputs(
         assert selection_frequency_path.stat().st_size > 0
         assert contribution_by_symbol_path.stat().st_size > 0
         assert monthly_selection_heatmap_path.stat().st_size > 0
+
+
+def test_candidate_deep_dive_report_compares_unsmoothed_and_smoothed_baselines(
+    tmp_path: Path,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    data_path = tmp_path / "etf_daily.csv"
+    output_dir = tmp_path / "reports"
+    _synthetic_etf_ohlcv().to_csv(data_path, index=False)
+
+    return_code = run_candidate_deep_dive_report_from_args(
+        [
+            "--data-path",
+            str(data_path),
+            "--output-dir",
+            str(output_dir),
+            "--report-name",
+            "deep_dive_smoothing_candidates",
+            "--fold",
+            "fold_1:2020-01-01:2020-09-30:2020-10-01:2020-12-31:2021-01-01:2021-02-28",
+            "--candidate",
+            "baseline:linear_unsmoothed_top1:linear_regression:1:42:1:0.0",
+            "--candidate",
+            "baseline:linear_smooth10_margin002:linear_regression:1:42:10:0.002",
+        ]
+    )
+
+    candidate_rank = pd.read_csv(
+        output_dir / "deep_dive_smoothing_candidates_candidate_rank.csv"
+    ).sort_values("candidate_name")
+    fold_summary = pd.read_csv(
+        output_dir / "deep_dive_smoothing_candidates_fold_summary.csv"
+    ).sort_values("candidate_name")
+
+    assert return_code == 0
+    assert candidate_rank["candidate_name"].tolist() == [
+        "linear_smooth10_margin002",
+        "linear_unsmoothed_top1",
+    ]
+    assert candidate_rank["min_holding_days"].tolist() == [10, 1]
+    assert candidate_rank["switch_margin"].tolist() == pytest.approx([0.002, 0.0])
+    assert fold_summary["min_holding_days"].tolist() == [10, 1]
+    assert fold_summary["switch_margin"].tolist() == pytest.approx([0.002, 0.0])
+    for candidate_name in ("linear_unsmoothed_top1", "linear_smooth10_margin002"):
+        assert (output_dir / candidate_name / f"{candidate_name}_fold_summary.csv").exists()

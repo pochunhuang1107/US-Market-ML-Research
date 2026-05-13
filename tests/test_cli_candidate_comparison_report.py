@@ -8,6 +8,7 @@ import pytest
 
 from us_market_ml.cli.run_candidate_comparison_report import (
     CandidateConfig,
+    _build_smoothing_config,
     _parse_args,
     parse_candidate_config,
     run_candidate_comparison_report_from_args,
@@ -70,6 +71,40 @@ def test_parse_candidate_config_baseline_format() -> None:
     )
 
 
+def test_parse_candidate_config_extended_baseline_format() -> None:
+    candidate = parse_candidate_config(
+        "baseline:linear_smooth10_margin002:linear_regression:1:42:10:0.002"
+    )
+
+    assert candidate == CandidateConfig(
+        family="baseline",
+        name="linear_smooth10_margin002",
+        top_k=1,
+        random_state=42,
+        model_type="linear_regression",
+        min_holding_days=10,
+        switch_margin=0.002,
+    )
+
+
+def test_parse_candidate_config_extended_mlp_format() -> None:
+    candidate = parse_candidate_config(
+        "mlp:broad_smooth10_margin002:3:256,128:0.0005:0.2:42:10:0.002"
+    )
+
+    assert candidate == CandidateConfig(
+        family="mlp",
+        name="broad_smooth10_margin002",
+        top_k=3,
+        random_state=42,
+        hidden_units=(256, 128),
+        learning_rate=0.0005,
+        dropout=0.2,
+        min_holding_days=10,
+        switch_margin=0.002,
+    )
+
+
 def test_parse_candidate_config_legacy_mlp_format() -> None:
     candidate = parse_candidate_config("broad_top3:3:256,128:0.0005:0.2:42")
 
@@ -95,11 +130,40 @@ def test_parse_candidate_config_legacy_mlp_format() -> None:
         ("bad_lr:1:16:0.0:0.0:42", "learning_rate must be positive"),
         ("bad_dropout:1:16:0.001:1.0:42", "dropout must satisfy"),
         ("baseline:bad_top_k:ridge:0:42", "top_k must be positive"),
+        ("baseline:bad_min_holding_days:ridge:1:42:0:0.0", "min_holding_days"),
+        ("baseline:bad_switch_margin:ridge:1:42:1:-0.001", "switch_margin"),
+        ("mlp:bad_min_holding_days:1:16:0.001:0.0:42:0:0.0", "min_holding_days"),
+        ("mlp:bad_switch_margin:1:16:0.001:0.0:42:1:-0.001", "switch_margin"),
     ],
 )
 def test_parse_candidate_config_validates(value: str, match: str) -> None:
     with pytest.raises(argparse.ArgumentTypeError, match=match):
         parse_candidate_config(value)
+
+
+def test_candidate_specific_smoothing_overrides_global_smoothing() -> None:
+    global_args = argparse.Namespace(min_holding_days=10, switch_margin=0.002)
+    unsmoothed_candidate = parse_candidate_config(
+        "baseline:linear_unsmoothed_top1:linear_regression:1:42:1:0.0"
+    )
+    smoothed_candidate = parse_candidate_config(
+        "baseline:linear_smooth10_margin002:linear_regression:1:42:5:0.001"
+    )
+    fallback_candidate = parse_candidate_config(
+        "baseline:linear_global_smoothing:linear_regression:1:42"
+    )
+
+    assert _build_smoothing_config(unsmoothed_candidate, global_args) is None
+
+    candidate_smoothing = _build_smoothing_config(smoothed_candidate, global_args)
+    assert candidate_smoothing is not None
+    assert candidate_smoothing.min_holding_days == 5
+    assert candidate_smoothing.switch_margin == pytest.approx(0.001)
+
+    fallback_smoothing = _build_smoothing_config(fallback_candidate, global_args)
+    assert fallback_smoothing is not None
+    assert fallback_smoothing.min_holding_days == 10
+    assert fallback_smoothing.switch_margin == pytest.approx(0.002)
 
 
 def test_duplicate_candidate_names_fail(tmp_path: Path) -> None:
@@ -188,6 +252,8 @@ def test_run_candidate_comparison_report_from_args_writes_outputs(
         "candidate_name",
         "candidate_family",
         "model_type",
+        "min_holding_days",
+        "switch_margin",
         "total_return",
         "sharpe_like",
         "max_drawdown",
@@ -210,6 +276,8 @@ def test_run_candidate_comparison_report_from_args_writes_outputs(
         "learning_rate",
         "dropout",
         "random_state",
+        "min_holding_days",
+        "switch_margin",
         "strategy_total_return",
         "strategy_max_drawdown",
         "strategy_final_equity",
@@ -233,3 +301,48 @@ def test_run_candidate_comparison_report_from_args_writes_outputs(
         fold_summary["candidate_family"] == "baseline", "epochs_trained"
     ].isna().all()
     assert fold_summary["fold_name"].tolist() == ["fold_1", "fold_2", "fold_1", "fold_2"]
+
+
+def test_candidate_comparison_report_compares_unsmoothed_and_smoothed_baselines(
+    tmp_path: Path,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    data_path = tmp_path / "etf_daily.csv"
+    output_dir = tmp_path / "reports"
+    _synthetic_etf_ohlcv().to_csv(data_path, index=False)
+
+    return_code = run_candidate_comparison_report_from_args(
+        [
+            "--data-path",
+            str(data_path),
+            "--output-dir",
+            str(output_dir),
+            "--report-name",
+            "baseline_smoothing_candidates",
+            "--fold",
+            "fold_1:2020-01-01:2020-09-30:2020-10-01:2020-12-31:2021-01-01:2021-02-28",
+            "--candidate",
+            "baseline:linear_unsmoothed_top1:linear_regression:1:42:1:0.0",
+            "--candidate",
+            "baseline:linear_smooth10_margin002:linear_regression:1:42:10:0.002",
+        ]
+    )
+
+    candidate_rank = pd.read_csv(
+        output_dir / "baseline_smoothing_candidates_candidate_rank.csv"
+    ).sort_values("candidate_name")
+    fold_summary = pd.read_csv(
+        output_dir / "baseline_smoothing_candidates_fold_summary.csv"
+    ).sort_values("candidate_name")
+
+    assert return_code == 0
+    assert candidate_rank["candidate_name"].tolist() == [
+        "linear_smooth10_margin002",
+        "linear_unsmoothed_top1",
+    ]
+    assert candidate_rank["min_holding_days"].tolist() == [10, 1]
+    assert candidate_rank["switch_margin"].tolist() == pytest.approx([0.002, 0.0])
+    assert fold_summary["min_holding_days"].tolist() == [10, 1]
+    assert fold_summary["switch_margin"].tolist() == pytest.approx([0.002, 0.0])
