@@ -34,6 +34,7 @@ us-market-ml-candidate-deep-dive-report = "us_market_ml.cli.run_candidate_deep_d
 us-market-ml-cost-sensitivity-report = "us_market_ml.cli.run_cost_sensitivity_report:run_cost_sensitivity_report_from_args"
 us-market-ml-model-card = "us_market_ml.cli.run_model_card:run_model_card_from_args"
 us-market-ml-paper-tracking-export = "us_market_ml.cli.run_paper_tracking_export:run_paper_tracking_export_from_args"
+us-market-ml-model-signal-export = "us_market_ml.cli.run_model_signal_export:run_model_signal_export_from_args"
 
 [project.optional-dependencies]
 dev = [
