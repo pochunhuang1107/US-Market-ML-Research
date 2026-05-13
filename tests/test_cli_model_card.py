@@ -107,7 +107,27 @@ def test_run_model_card_from_args_writes_markdown(
                 "final_equity": 1.26,
                 "total_transaction_cost": 0.0,
                 "mean_daily_turnover": 0.10,
-            }
+            },
+            {
+                "candidate_name": candidate_name,
+                "cost_bps": 10.0,
+                "total_return": 0.18,
+                "sharpe_like": 0.06,
+                "max_drawdown": -0.20,
+                "final_equity": 1.18,
+                "total_transaction_cost": 0.03,
+                "mean_daily_turnover": 0.10,
+            },
+            {
+                "candidate_name": candidate_name,
+                "cost_bps": 20.0,
+                "total_return": 0.10,
+                "sharpe_like": 0.04,
+                "max_drawdown": -0.23,
+                "final_equity": 1.10,
+                "total_transaction_cost": 0.06,
+                "mean_daily_turnover": 0.10,
+            },
         ]
     ).to_csv(cost_sensitivity_path, index=False)
 
@@ -138,4 +158,11 @@ def test_run_model_card_from_args_writes_markdown(
     assert output_path.exists()
     assert "# Candidate Model Card: linear_smooth10_margin002" in markdown
     assert "promising_for_further_research" in markdown
+    expected_header = (
+        "| cost_bps | total_return | sharpe_like | max_drawdown | final_equity | "
+        "total_transaction_cost | mean_daily_turnover |"
+    )
+    assert expected_header in markdown
+    assert "| 20 | 10.00% | 0.0400 | -23.00% | 1.1000 | 0.0600 | 10.00% |" in markdown
+    assert "Cost robustness label: **high**" in markdown
     assert "Disclaimer: research only, not financial advice" in markdown

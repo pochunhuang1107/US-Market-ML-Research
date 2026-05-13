@@ -144,6 +144,17 @@ def _cost_sensitivity() -> pd.DataFrame:
                 "mean_daily_turnover": 0.10,
                 "return_decay_vs_0bps": -0.06,
             },
+            {
+                "candidate_name": "linear_smooth10_margin002",
+                "cost_bps": 20.0,
+                "total_return": 0.12,
+                "sharpe_like": 0.05,
+                "max_drawdown": -0.22,
+                "final_equity": 1.12,
+                "total_transaction_cost": 0.06,
+                "mean_daily_turnover": 0.10,
+                "return_decay_vs_0bps": -0.14,
+            },
         ]
     )
 
@@ -152,6 +163,7 @@ def _card(
     *,
     metrics: pd.DataFrame | None = None,
     concentration: pd.DataFrame | None = None,
+    cost_sensitivity: pd.DataFrame | None = None,
 ) -> str:
     return build_candidate_model_card(
         candidate_name="linear_smooth10_margin002",
@@ -164,7 +176,7 @@ def _card(
         holding_period_summary=_holding_period_summary(),
         holdings_summary=_holdings_summary(),
         contribution_summary=_contribution_summary(),
-        cost_sensitivity=_cost_sensitivity(),
+        cost_sensitivity=_cost_sensitivity() if cost_sensitivity is None else cost_sensitivity,
     )
 
 
@@ -215,3 +227,87 @@ def test_build_candidate_model_card_verdict_not_currently_promising() -> None:
     )
 
     assert "not_currently_promising" in card
+
+
+def test_build_candidate_model_card_renders_cost_sensitivity_table() -> None:
+    card = _card()
+    expected_header = (
+        "| cost_bps | total_return | sharpe_like | max_drawdown | final_equity | "
+        "total_transaction_cost | mean_daily_turnover |"
+    )
+
+    assert expected_header in card
+    assert "| 0 | 26.00% | 0.0900 | -17.00% | 1.2600 | 0.0000 | 10.00% |" in card
+    assert "| 10 | 20.00% | 0.0700 | -19.00% | 1.2000 | 0.0300 | 10.00% |" in card
+    assert "| 20 | 12.00% | 0.0500 | -22.00% | 1.1200 | 0.0600 | 10.00% |" in card
+    assert "| highest_positive_cost_bps | 20 |" in card
+    assert "| first_negative_cost_bps | not observed |" in card
+    assert "| return_at_10bps | 20.00% |" in card
+    assert "| return_at_20bps | 12.00% |" in card
+    assert "Cost robustness label: **high**" in card
+
+
+def test_build_candidate_model_card_filters_cost_sensitivity_by_candidate_name() -> None:
+    cost_sensitivity = pd.concat(
+        [
+            _cost_sensitivity(),
+            pd.DataFrame(
+                [
+                    {
+                        "candidate_name": "other_candidate",
+                        "cost_bps": 5.0,
+                        "total_return": -0.50,
+                        "sharpe_like": -0.20,
+                        "max_drawdown": -0.70,
+                        "final_equity": 0.50,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    card = _card(cost_sensitivity=cost_sensitivity)
+
+    assert "other_candidate" not in card
+    assert "-50.00%" not in card
+    assert (
+        "| 20 | 12.00% | 0.0500 | -22.00% | 1.1200 | 0.0600 | 10.00% |" in card
+    )
+
+
+def test_build_candidate_model_card_missing_cost_sensitivity_keeps_fallback_text() -> None:
+    card = _card(cost_sensitivity=pd.DataFrame())
+
+    assert "No separate transaction-cost sensitivity table was provided." in card
+    assert "Cost robustness label" not in card
+
+
+def test_build_candidate_model_card_cost_robustness_labels() -> None:
+    base_rows = [
+        {"cost_bps": 5.0, "sharpe_like": 0.01, "max_drawdown": -0.10, "final_equity": 1.01},
+        {"cost_bps": 10.0, "sharpe_like": 0.01, "max_drawdown": -0.10, "final_equity": 1.01},
+        {"cost_bps": 20.0, "sharpe_like": 0.01, "max_drawdown": -0.10, "final_equity": 1.01},
+    ]
+
+    cases = [
+        ([0.03, 0.02, 0.01], "high"),
+        ([0.03, 0.02, -0.01], "medium"),
+        ([0.03, -0.01, -0.02], "low"),
+        ([-0.01, -0.02, -0.03], "fragile"),
+    ]
+    for returns, expected_label in cases:
+        sensitivity = pd.DataFrame(
+            [
+                {
+                    **row,
+                    "candidate_name": "linear_smooth10_margin002",
+                    "total_return": total_return,
+                }
+                for row, total_return in zip(base_rows, returns, strict=True)
+            ]
+        )
+
+        card = _card(cost_sensitivity=sensitivity)
+
+        assert f"Cost robustness label: **{expected_label}**" in card
