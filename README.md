@@ -341,9 +341,9 @@ us-market-ml-candidate-comparison-report \
   --fold fold_1:2018-01-01:2020-12-31:2021-01-01:2021-12-31:2022-01-01:2022-12-31 \
   --fold fold_2:2018-01-01:2021-12-31:2022-01-01:2022-12-31:2023-01-01:2023-12-31 \
   --fold fold_3:2018-01-01:2022-12-31:2023-01-01:2023-12-31:2024-01-01:2024-12-31 \
-  --candidate baseline:linear_full_top1:linear_regression:1:42 \
+  --candidate baseline:linear_unsmoothed_top1:linear_regression:1:42 \
+  --candidate baseline:linear_smooth10_margin002:linear_regression:1:42:10:0.002 \
   --candidate mlp:mlp_broad_top5_safe:5:256,128:0.001:0.3:42 \
-  --candidate mlp:mlp_broad_top1_aggressive:1:128,64,32:0.0005:0.2:42 \
   --benchmark-symbols SPY,QQQ \
   --universe-symbols SPY,QQQ,TLT,IWM \
   --scale-target \
@@ -359,13 +359,26 @@ tree candidates use `baseline:name:model_type:top_k:random_state`, where
 `model_type` can be `linear_regression`, `ridge`, `random_forest`,
 `gradient_boosting`, or `extra_trees`. The legacy MLP-only format
 `name:top_k:hidden_units:learning_rate:dropout:random_state` is still accepted
-for backward compatibility. Candidate names must be unique. The command writes
+for backward compatibility.
+
+Candidate specs can optionally append per-candidate smoothing settings:
+`baseline:name:model_type:top_k:random_state:min_holding_days:switch_margin`
+or
+`mlp:name:top_k:hidden_units:learning_rate:dropout:random_state:min_holding_days:switch_margin`.
+When present, these override the global `--min-holding-days` and
+`--switch-margin` for that candidate only. This lets one report compare an
+unsmoothed candidate such as
+`baseline:linear_unsmoothed_top1:linear_regression:1:42` against a smoothed
+version such as
+`baseline:linear_smooth10_margin002:linear_regression:1:42:10:0.002`.
+Candidate names must be unique. The command writes
 `{report_name}_combined_equity.csv` with all candidate and benchmark equity
 series, `{report_name}_metrics.csv` with metrics for every plotted series,
 `{report_name}_candidate_rank.csv` with candidate family, model type, total
 return, Sharpe-like, drawdown, final equity, optional cost/turnover metrics,
-and metric ranks,
-`{report_name}_fold_summary.csv` with per-candidate test-fold summaries, and
+effective smoothing settings, and metric ranks,
+`{report_name}_fold_summary.csv` with per-candidate test-fold summaries and
+effective smoothing settings, and
 `{report_name}_equity.png` with the combined static equity chart.
 
 ## Candidate Deep-dive Report
@@ -389,7 +402,8 @@ us-market-ml-candidate-deep-dive-report \
   --fold fold_1:2018-01-01:2020-12-31:2021-01-01:2021-12-31:2022-01-01:2022-12-31 \
   --fold fold_2:2018-01-01:2021-12-31:2022-01-01:2022-12-31:2023-01-01:2023-12-31 \
   --fold fold_3:2018-01-01:2022-12-31:2023-01-01:2023-12-31:2024-01-01:2024-12-31 \
-  --candidate baseline:linear_full_top1:linear_regression:1:42 \
+  --candidate baseline:linear_unsmoothed_top1:linear_regression:1:42 \
+  --candidate baseline:linear_smooth10_margin002:linear_regression:1:42:10:0.002 \
   --candidate mlp:mlp_broad_top5_safe:5:256,128:0.001:0.3:42 \
   --benchmark-symbols SPY,QQQ \
   --universe-symbols SPY,QQQ,TLT,IWM \
@@ -404,7 +418,11 @@ MLP candidates use
 `mlp:name:top_k:hidden_units:learning_rate:dropout:random_state`. Baseline and
 tree candidates use `baseline:name:model_type:top_k:random_state`, with the
 same baseline model types as the comparison report. The legacy MLP-only format
-is still accepted for backward compatibility.
+is still accepted for backward compatibility. The same optional per-candidate
+smoothing suffixes from the comparison report are supported, so a deep-dive can
+include both
+`baseline:linear_unsmoothed_top1:linear_regression:1:42` and
+`baseline:linear_smooth10_margin002:linear_regression:1:42:10:0.002`.
 
 The top-level output directory receives `{report_name}_candidate_equity.csv`,
 `{report_name}_candidate_metrics.csv`, `{report_name}_candidate_rank.csv`,

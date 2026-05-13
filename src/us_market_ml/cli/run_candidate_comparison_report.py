@@ -53,6 +53,8 @@ FOLD_SUMMARY_COLUMNS = [
     "learning_rate",
     "dropout",
     "random_state",
+    "min_holding_days",
+    "switch_margin",
     "strategy_total_return",
     "strategy_max_drawdown",
     "strategy_final_equity",
@@ -74,6 +76,14 @@ class CandidateConfig:
     hidden_units: tuple[int, ...] | None = None
     learning_rate: float | None = None
     dropout: float | None = None
+    min_holding_days: int | None = None
+    switch_margin: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.min_holding_days is not None and self.min_holding_days < 1:
+            raise ValueError("min_holding_days must be greater than or equal to 1.")
+        if self.switch_margin is not None and self.switch_margin < 0.0:
+            raise ValueError("switch_margin must be greater than or equal to 0.")
 
 
 def run_candidate_comparison_report_from_args(argv: list[str] | None = None) -> int:
@@ -107,7 +117,7 @@ def run_candidate_comparison_report_from_args(argv: list[str] | None = None) -> 
             raise ValueError("Candidate test periods do not align; v1 requires identical dates.")
 
         candidate_curves.append(_candidate_curve_to_long(stitched_strategy, candidate.name))
-        fold_summaries.append(_build_candidate_fold_summary(candidate, result, folds))
+        fold_summaries.append(_build_candidate_fold_summary(candidate, result, folds, args))
 
     if expected_dates is None or expected_dates.empty:
         raise ValueError("No candidate test equity curve rows were produced.")
@@ -140,7 +150,7 @@ def run_candidate_comparison_report_from_args(argv: list[str] | None = None) -> 
     ).sort_values(by=["date", "series_name"], kind="mergesort")
     combined_equity = combined_equity.reset_index(drop=True)
     metrics = summarize_equity_series(combined_equity)
-    candidate_rank = _build_candidate_rank_table(metrics, args.candidate)
+    candidate_rank = _build_candidate_rank_table(metrics, args.candidate, args)
     fold_summary = pd.DataFrame(
         [
             row
@@ -188,6 +198,10 @@ def parse_candidate_config(value: str) -> CandidateConfig:
     if any(not part for part in parts):
         raise argparse.ArgumentTypeError("Candidate values must be non-empty.")
 
+    if len(parts) == 9 and parts[0] == "mlp":
+        return _parse_mlp_candidate_config(parts, original_value=value)
+    if len(parts) == 7 and parts[0] == "baseline":
+        return _parse_baseline_candidate_config(parts, original_value=value)
     if len(parts) == 7:
         return _parse_mlp_candidate_config(parts, original_value=value)
     if len(parts) == 5:
@@ -202,8 +216,10 @@ def parse_candidate_config(value: str) -> CandidateConfig:
 
     raise argparse.ArgumentTypeError(
         "Candidate must use format "
-        "mlp:name:top_k:hidden_units:learning_rate:dropout:random_state, "
-        "baseline:name:model_type:top_k:random_state, or legacy "
+        "mlp:name:top_k:hidden_units:learning_rate:dropout:random_state"
+        "[:min_holding_days:switch_margin], "
+        "baseline:name:model_type:top_k:random_state[:min_holding_days:switch_margin], "
+        "or legacy "
         "name:top_k:hidden_units:learning_rate:dropout:random_state."
     )
 
@@ -213,15 +229,32 @@ def _parse_mlp_candidate_config(
     *,
     original_value: str,
 ) -> CandidateConfig:
-    (
-        family,
-        name,
-        top_k_value,
-        hidden_units_value,
-        learning_rate_value,
-        dropout_value,
-        random_state_value,
-    ) = parts
+    if len(parts) == 7:
+        (
+            family,
+            name,
+            top_k_value,
+            hidden_units_value,
+            learning_rate_value,
+            dropout_value,
+            random_state_value,
+        ) = parts
+        min_holding_days_value = None
+        switch_margin_value = None
+    elif len(parts) == 9:
+        (
+            family,
+            name,
+            top_k_value,
+            hidden_units_value,
+            learning_rate_value,
+            dropout_value,
+            random_state_value,
+            min_holding_days_value,
+            switch_margin_value,
+        ) = parts
+    else:
+        raise argparse.ArgumentTypeError(f"Invalid candidate value: {original_value!r}")
     _validate_candidate_family(family)
     return _build_mlp_candidate_config(
         name=name,
@@ -230,6 +263,8 @@ def _parse_mlp_candidate_config(
         learning_rate_value=learning_rate_value,
         dropout_value=dropout_value,
         random_state_value=random_state_value,
+        min_holding_days_value=min_holding_days_value,
+        switch_margin_value=switch_margin_value,
         original_value=original_value,
     )
 
@@ -254,6 +289,8 @@ def _parse_legacy_mlp_candidate_config(
         learning_rate_value=learning_rate_value,
         dropout_value=dropout_value,
         random_state_value=random_state_value,
+        min_holding_days_value=None,
+        switch_margin_value=None,
         original_value=original_value,
     )
 
@@ -266,6 +303,8 @@ def _build_mlp_candidate_config(
     learning_rate_value: str,
     dropout_value: str,
     random_state_value: str,
+    min_holding_days_value: str | None,
+    switch_margin_value: str | None,
     original_value: str,
 ) -> CandidateConfig:
     if not name:
@@ -279,6 +318,11 @@ def _build_mlp_candidate_config(
         random_state = int(random_state_value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"Invalid candidate value: {original_value!r}") from exc
+    min_holding_days, switch_margin = _parse_candidate_smoothing_values(
+        min_holding_days_value=min_holding_days_value,
+        switch_margin_value=switch_margin_value,
+        original_value=original_value,
+    )
 
     if top_k <= 0:
         raise argparse.ArgumentTypeError("candidate top_k must be positive.")
@@ -295,6 +339,8 @@ def _build_mlp_candidate_config(
         hidden_units=hidden_units,
         learning_rate=learning_rate,
         dropout=dropout,
+        min_holding_days=min_holding_days,
+        switch_margin=switch_margin,
     )
 
 
@@ -303,7 +349,22 @@ def _parse_baseline_candidate_config(
     *,
     original_value: str,
 ) -> CandidateConfig:
-    family, name, model_type, top_k_value, random_state_value = parts
+    if len(parts) == 5:
+        family, name, model_type, top_k_value, random_state_value = parts
+        min_holding_days_value = None
+        switch_margin_value = None
+    elif len(parts) == 7:
+        (
+            family,
+            name,
+            model_type,
+            top_k_value,
+            random_state_value,
+            min_holding_days_value,
+            switch_margin_value,
+        ) = parts
+    else:
+        raise argparse.ArgumentTypeError(f"Invalid candidate value: {original_value!r}")
     _validate_candidate_family(family)
     if not name:
         raise argparse.ArgumentTypeError("candidate name must be non-empty.")
@@ -315,6 +376,11 @@ def _parse_baseline_candidate_config(
         random_state = int(random_state_value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"Invalid candidate value: {original_value!r}") from exc
+    min_holding_days, switch_margin = _parse_candidate_smoothing_values(
+        min_holding_days_value=min_holding_days_value,
+        switch_margin_value=switch_margin_value,
+        original_value=original_value,
+    )
 
     if top_k <= 0:
         raise argparse.ArgumentTypeError("candidate top_k must be positive.")
@@ -325,7 +391,38 @@ def _parse_baseline_candidate_config(
         top_k=top_k,
         random_state=random_state,
         model_type=model_type,
+        min_holding_days=min_holding_days,
+        switch_margin=switch_margin,
     )
+
+
+def _parse_candidate_smoothing_values(
+    *,
+    min_holding_days_value: str | None,
+    switch_margin_value: str | None,
+    original_value: str,
+) -> tuple[int | None, float | None]:
+    if min_holding_days_value is None and switch_margin_value is None:
+        return None, None
+    if min_holding_days_value is None or switch_margin_value is None:
+        raise argparse.ArgumentTypeError(f"Invalid candidate value: {original_value!r}")
+
+    try:
+        min_holding_days = int(min_holding_days_value)
+        switch_margin = float(switch_margin_value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid candidate value: {original_value!r}") from exc
+
+    if min_holding_days < 1:
+        raise argparse.ArgumentTypeError(
+            "candidate min_holding_days must be greater than or equal to 1."
+        )
+    if switch_margin < 0.0:
+        raise argparse.ArgumentTypeError(
+            "candidate switch_margin must be greater than or equal to 0."
+        )
+
+    return min_holding_days, switch_margin
 
 
 def _validate_candidate_family(family: str) -> None:
@@ -362,8 +459,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         required=True,
         help=(
             "Repeatable candidate spec: "
-            "mlp:name:top_k:hidden_units:learning_rate:dropout:random_state, "
-            "baseline:name:model_type:top_k:random_state, or legacy "
+            "mlp:name:top_k:hidden_units:learning_rate:dropout:random_state"
+            "[:min_holding_days:switch_margin], "
+            "baseline:name:model_type:top_k:random_state[:min_holding_days:switch_margin], "
+            "or legacy "
             "name:top_k:hidden_units:learning_rate:dropout:random_state"
         ),
     )
@@ -464,7 +563,7 @@ def _build_mlp_experiment_config(
             initial_equity=1.0,
             transaction_cost_bps=args.transaction_cost_bps,
         ),
-        smoothing_config=_build_smoothing_config(args),
+        smoothing_config=_build_smoothing_config(candidate, args),
     )
 
 
@@ -497,19 +596,38 @@ def _build_baseline_experiment_config(
             initial_equity=1.0,
             transaction_cost_bps=args.transaction_cost_bps,
         ),
-        smoothing_config=_build_smoothing_config(args),
+        smoothing_config=_build_smoothing_config(candidate, args),
     )
 
 
-def _build_smoothing_config(args: argparse.Namespace) -> SignalSmoothingConfig | None:
-    min_holding_days = getattr(args, "min_holding_days", 1)
-    switch_margin = getattr(args, "switch_margin", 0.0)
+def _build_smoothing_config(
+    candidate: CandidateConfig,
+    args: argparse.Namespace,
+) -> SignalSmoothingConfig | None:
+    min_holding_days, switch_margin = _effective_smoothing_values(candidate, args)
     if min_holding_days <= 1 and switch_margin <= 0.0:
         return None
     return SignalSmoothingConfig(
         min_holding_days=min_holding_days,
         switch_margin=switch_margin,
     )
+
+
+def _effective_smoothing_values(
+    candidate: CandidateConfig,
+    args: argparse.Namespace | None = None,
+) -> tuple[int, float]:
+    min_holding_days = (
+        candidate.min_holding_days
+        if candidate.min_holding_days is not None
+        else getattr(args, "min_holding_days", 1)
+    )
+    switch_margin = (
+        candidate.switch_margin
+        if candidate.switch_margin is not None
+        else getattr(args, "switch_margin", 0.0)
+    )
+    return min_holding_days, switch_margin
 
 
 def _build_purge_config(args: argparse.Namespace) -> PurgeConfig | None:
@@ -559,6 +677,7 @@ def _benchmark_curve_to_long(benchmark_curve: pd.DataFrame) -> pd.DataFrame:
 def _build_candidate_rank_table(
     metrics: pd.DataFrame,
     candidates: list[CandidateConfig] | list[str],
+    args: argparse.Namespace | None = None,
 ) -> pd.DataFrame:
     candidate_names = [
         candidate.name if isinstance(candidate, CandidateConfig) else candidate
@@ -566,14 +685,17 @@ def _build_candidate_rank_table(
     ]
     candidate_metrics = metrics.loc[metrics["series_name"].isin(candidate_names)].copy()
     candidate_metrics = candidate_metrics.rename(columns={"series_name": "candidate_name"})
-    metadata_rows: list[dict[str, str]] = []
+    metadata_rows: list[dict[str, object]] = []
     for candidate in candidates:
         if isinstance(candidate, CandidateConfig):
+            min_holding_days, switch_margin = _effective_smoothing_values(candidate, args)
             metadata_rows.append(
                 {
                     "candidate_name": candidate.name,
                     "candidate_family": candidate.family,
                     "model_type": _candidate_model_type_label(candidate),
+                    "min_holding_days": min_holding_days,
+                    "switch_margin": switch_margin,
                 }
             )
         else:
@@ -582,6 +704,8 @@ def _build_candidate_rank_table(
                     "candidate_name": candidate,
                     "candidate_family": "mlp",
                     "model_type": "mlp",
+                    "min_holding_days": getattr(args, "min_holding_days", 1),
+                    "switch_margin": getattr(args, "switch_margin", 0.0),
                 }
             )
     candidate_metadata = pd.DataFrame(metadata_rows)
@@ -614,6 +738,8 @@ def _build_candidate_rank_table(
             "candidate_name",
             "candidate_family",
             "model_type",
+            "min_holding_days",
+            "switch_margin",
             "total_return",
             "sharpe_like",
             "max_drawdown",
@@ -633,10 +759,12 @@ def _build_candidate_fold_summary(
     candidate: CandidateConfig,
     result: MLPE2EExperimentResult | BaselineE2EExperimentResult,
     folds: list[WalkForwardFold],
+    args: argparse.Namespace | None = None,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     fold_results = _candidate_fold_results(candidate, result)
     fit_results = _candidate_fit_results(candidate, result)
+    min_holding_days, switch_margin = _effective_smoothing_values(candidate, args)
     for fold_result, fit_result, fold in zip(fold_results, fit_results, folds, strict=True):
         equity_curve = fold_result.test_backtest.equity_curve
         metrics = summarize_backtest(equity_curve, SignalBacktestConfig(initial_equity=1.0))
@@ -663,6 +791,8 @@ def _build_candidate_fold_summary(
                 "learning_rate": candidate.learning_rate,
                 "dropout": candidate.dropout,
                 "random_state": candidate.random_state,
+                "min_holding_days": min_holding_days,
+                "switch_margin": switch_margin,
                 "strategy_total_return": metrics["total_return"],
                 "strategy_max_drawdown": metrics["max_drawdown"],
                 "strategy_final_equity": metrics["final_equity"],

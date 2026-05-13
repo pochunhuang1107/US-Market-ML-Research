@@ -108,7 +108,7 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
                 candidate=candidate,
                 stitched_strategy=stitched_strategy,
                 candidate_equity=_candidate_curve_to_long(stitched_strategy, candidate.name),
-                fold_summary=_build_candidate_fold_summary(candidate, result, folds),
+                fold_summary=_build_candidate_fold_summary(candidate, result, folds, args),
                 selected_holdings=selected_holdings,
                 position_contributions=position_contributions,
                 holdings_summary=holdings_summary,
@@ -156,6 +156,7 @@ def run_candidate_deep_dive_report_from_args(argv: list[str] | None = None) -> i
     candidate_rank = _build_candidate_rank_table(
         candidate_metrics,
         [report_data.candidate for report_data in candidate_reports],
+        args,
     )
     candidate_metrics_output = candidate_rank.copy()
     concentration_summary = _build_concentration_summary(candidate_reports)
@@ -235,8 +236,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         required=True,
         help=(
             "Repeatable candidate spec: "
-            "mlp:name:top_k:hidden_units:learning_rate:dropout:random_state, "
-            "baseline:name:model_type:top_k:random_state, or legacy "
+            "mlp:name:top_k:hidden_units:learning_rate:dropout:random_state"
+            "[:min_holding_days:switch_margin], "
+            "baseline:name:model_type:top_k:random_state[:min_holding_days:switch_margin], "
+            "or legacy "
             "name:top_k:hidden_units:learning_rate:dropout:random_state"
         ),
     )
