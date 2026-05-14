@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pandas as pd
 
 from us_market_ml.exports.model_signals import (
@@ -23,6 +25,12 @@ HEALTHCHECK_COLUMNS: tuple[str, ...] = (
     "forbidden_column_count",
     "manifest_status",
     "manifest_latest_signal_date",
+    "reference_date",
+    "signal_age_days",
+    "max_signal_age_days",
+    "stale_as_failure",
+    "stale_signal",
+    "export_created_date",
     "artifact_path",
     "warnings_count",
 )
@@ -33,6 +41,9 @@ def run_model_signal_healthcheck(
     manifest: dict[str, object],
     model_version: str | None = None,
     expected_latest_date: str | None = None,
+    max_signal_age_days: int | None = None,
+    reference_date: str | None = None,
+    stale_as_failure: bool = False,
     min_symbol_count: int | None = None,
     require_top_signal: bool = True,
     artifact_path: str | None = None,
@@ -83,6 +94,14 @@ def run_model_signal_healthcheck(
             )
 
     latest_signal_date = _latest_signal_date(artifact)
+    resolved_reference_date = _resolve_reference_date(reference_date)
+    signal_age_days = _signal_age_days(latest_signal_date, resolved_reference_date)
+    stale_signal = (
+        max_signal_age_days is not None
+        and signal_age_days is not None
+        and signal_age_days > max_signal_age_days
+    )
+    export_created_date = _manifest_date(manifest, "export_created_at")
     duplicate_count = _duplicate_count(artifact)
     forbidden_column_count = _forbidden_column_count(artifact)
     top_signal_count = _signal_bucket_count(artifact, "top")
@@ -131,6 +150,14 @@ def run_model_signal_healthcheck(
                 f"Latest signal date {latest_signal_date or 'missing'} does not match "
                 f"expected {expected}."
             )
+    if max_signal_age_days is not None:
+        if max_signal_age_days < 0:
+            errors.append("max_signal_age_days must be greater than or equal to 0.")
+        elif stale_signal and signal_age_days is not None:
+            warnings.append(
+                "latest_signal_date is stale: age "
+                f"{signal_age_days} days exceeds max_signal_age_days {max_signal_age_days}"
+            )
     if min_symbol_count is not None and symbol_count < min_symbol_count:
         warnings.append(f"Symbol count {symbol_count} is below minimum {min_symbol_count}.")
     if require_top_signal and top_signal_count == 0:
@@ -145,7 +172,13 @@ def run_model_signal_healthcheck(
 
     warnings.extend(_manifest_warnings(manifest))
 
-    status = "failed" if errors else "warning" if warnings else "ready"
+    status = (
+        "failed"
+        if errors or (stale_signal and stale_as_failure)
+        else "warning"
+        if warnings
+        else "ready"
+    )
     summary = pd.DataFrame(
         [
             {
@@ -160,6 +193,12 @@ def run_model_signal_healthcheck(
                 "forbidden_column_count": forbidden_column_count,
                 "manifest_status": manifest_status,
                 "manifest_latest_signal_date": manifest_latest_signal_date,
+                "reference_date": resolved_reference_date,
+                "signal_age_days": signal_age_days,
+                "max_signal_age_days": max_signal_age_days,
+                "stale_as_failure": stale_as_failure,
+                "stale_signal": stale_signal,
+                "export_created_date": export_created_date,
                 "artifact_path": artifact_path or _manifest_text(manifest, "artifact_path"),
                 "warnings_count": len(warnings),
             }
@@ -193,6 +232,36 @@ def _latest_signal_date(artifact: pd.DataFrame) -> str:
     if parsed.dropna().empty:
         return ""
     return str(pd.Timestamp(parsed.max()).date().isoformat())
+
+
+def _resolve_reference_date(reference_date: str | None) -> str:
+    if reference_date is None:
+        return datetime.now(tz=UTC).date().isoformat()
+    parsed = pd.Timestamp(reference_date)
+    if pd.isna(parsed):
+        raise ValueError("reference_date must be parseable as a date.")
+    return parsed.date().isoformat()
+
+
+def _signal_age_days(latest_signal_date: str, reference_date: str) -> int | None:
+    if not latest_signal_date:
+        return None
+    latest = pd.Timestamp(latest_signal_date).date()
+    reference = pd.Timestamp(reference_date).date()
+    return (reference - latest).days
+
+
+def _manifest_date(manifest: dict[str, object], key: str) -> str:
+    text = _manifest_text(manifest, key)
+    if not text:
+        return ""
+    try:
+        parsed = pd.Timestamp(text)
+    except (TypeError, ValueError):
+        return ""
+    if pd.isna(parsed):
+        return ""
+    return parsed.date().isoformat()
 
 
 def _duplicate_count(artifact: pd.DataFrame) -> int:
