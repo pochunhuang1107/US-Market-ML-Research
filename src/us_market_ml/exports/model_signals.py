@@ -27,6 +27,11 @@ MODEL_SIGNAL_OPTIONAL_COLUMNS: tuple[str, ...] = (
     "created_at",
 )
 
+MODEL_SIGNAL_ARTIFACT_COLUMNS: list[str] = [
+    *MODEL_SIGNAL_REQUIRED_COLUMNS,
+    *MODEL_SIGNAL_OPTIONAL_COLUMNS,
+]
+
 FORBIDDEN_LOOKAHEAD_COLUMNS: tuple[str, ...] = (
     "future_return",
     "forward_return",

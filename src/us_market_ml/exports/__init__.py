@@ -1,6 +1,8 @@
-"""Export helpers for runtime-compatible research artifacts."""
+"""Local export helpers for research artifacts."""
 
+from us_market_ml.exports.model_signal_manifest import build_model_signal_manifest
 from us_market_ml.exports.model_signals import (
+    MODEL_SIGNAL_ARTIFACT_COLUMNS,
     MODEL_SIGNAL_OPTIONAL_COLUMNS,
     MODEL_SIGNAL_REQUIRED_COLUMNS,
     build_model_signal_artifact,
@@ -8,8 +10,10 @@ from us_market_ml.exports.model_signals import (
 )
 
 __all__ = [
+    "MODEL_SIGNAL_ARTIFACT_COLUMNS",
     "MODEL_SIGNAL_OPTIONAL_COLUMNS",
     "MODEL_SIGNAL_REQUIRED_COLUMNS",
     "build_model_signal_artifact",
+    "build_model_signal_manifest",
     "validate_model_signal_artifact",
 ]

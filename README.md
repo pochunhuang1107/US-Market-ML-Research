@@ -765,3 +765,30 @@ python -m pip install -e ".[dev,nn]"
    the first tabular MLP.
 8. Backtest signals against SPY, QQQ, and equal-weight ETF baselines.
 9. Store reproducible artifacts under `artifacts/`.
+
+## Daily Model Signal Export
+
+The daily model signal export is the local paper-tracking artifact path for
+platform ingestion. It reruns one selected research candidate through the
+existing feature, model, ranking, and smoothing workflow, then writes a compact
+runtime-safe signal artifact plus manifest for the latest available signal
+date. This remains research-only output: it is not live trading advice, not a
+broker integration, not scheduling, and not an order/execution system.
+
+```bash
+python -m pip install -e ".[dev,nn]"
+
+us-market-ml-daily-signal-export \
+  --data-path data/curated/etf_daily_ohlcv.parquet \
+  --output-dir artifacts/model_signals \
+  --candidate baseline:linear_smooth10_margin002:linear_regression:1:42:10:0.002 \
+  --model-version linear_smooth10_margin002_v1 \
+  --feature-set-version default_features_v1 \
+  --train-start 2018-01-01 \
+  --train-end 2022-12-31 \
+  --validation-start 2023-01-01 \
+  --validation-end 2023-12-31 \
+  --label-horizon-days 20 \
+  --format parquet \
+  --merge-existing
+
