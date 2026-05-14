@@ -825,12 +825,16 @@ us-market-ml-daily-signal-healthcheck \
   --manifest-path artifacts/model_signals_daily/model_version=linear_smooth10_margin002_v1/model_signal_manifest.json \
   --model-version linear_smooth10_margin002_v1 \
   --min-symbol-count 2 \
+  --max-signal-age-days 3 \
   --output-path artifacts/model_signals_daily/model_version=linear_smooth10_margin002_v1/healthcheck.csv \
   --warnings-output-path artifacts/model_signals_daily/model_version=linear_smooth10_margin002_v1/healthcheck_warnings.txt
 ```
 
 The healthcheck validates required runtime columns, model version consistency,
 numeric scores, duplicate date/symbol/model rows, forbidden lookahead columns,
-and manifest consistency. It returns `0` for `ready` or `warning`, and `1` for
-`failed`. The daily operator checklist lives in
+manifest consistency, and optional freshness via `--max-signal-age-days`.
+Freshness compares `latest_signal_date` with the current UTC date by default,
+or with `--reference-date` when provided. It returns `0` for `ready` or
+`warning`, and `1` for `failed`; pass `--stale-as-failure` to make a stale
+latest signal date fail the check. The daily operator checklist lives in
 [`docs/DAILY_MODEL_SIGNAL_RUNBOOK.md`](docs/DAILY_MODEL_SIGNAL_RUNBOOK.md).

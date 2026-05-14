@@ -28,6 +28,7 @@ def test_model_signal_healthcheck_ready_case() -> None:
     assert row["other_signal_count"] == 1
     assert row["duplicate_count"] == 0
     assert row["forbidden_column_count"] == 0
+    assert row["export_created_date"] == "2024-01-03"
     assert warnings == []
 
 
@@ -67,6 +68,107 @@ def test_model_signal_healthcheck_warns_on_expected_latest_date_mismatch() -> No
 
     assert summary.iloc[0]["status"] == "warning"
     assert any("does not match expected 2024-01-04" in warning for warning in warnings)
+
+
+def test_model_signal_healthcheck_ready_when_signal_age_within_threshold() -> None:
+    artifact = _valid_artifact()
+    manifest = _manifest(artifact)
+
+    summary, warnings = run_model_signal_healthcheck(
+        artifact,
+        manifest,
+        max_signal_age_days=2,
+        reference_date="2024-01-05",
+    )
+
+    row = summary.iloc[0]
+    assert row["status"] == "ready"
+    assert row["reference_date"] == "2024-01-05"
+    assert row["signal_age_days"] == 2
+    assert row["max_signal_age_days"] == 2
+    assert not bool(row["stale_as_failure"])
+    assert not bool(row["stale_signal"])
+    assert warnings == []
+
+
+def test_model_signal_healthcheck_does_not_fail_when_export_created_later_than_signal() -> None:
+    artifact = _valid_artifact()
+    manifest = _manifest(artifact)
+    manifest["export_created_at"] = "2024-01-07T12:00:00Z"
+
+    summary, warnings = run_model_signal_healthcheck(
+        artifact,
+        manifest,
+        max_signal_age_days=2,
+        reference_date="2024-01-05",
+    )
+
+    row = summary.iloc[0]
+    assert row["status"] == "ready"
+    assert row["latest_signal_date"] == "2024-01-03"
+    assert row["export_created_date"] == "2024-01-07"
+    assert row["signal_age_days"] == 2
+    assert warnings == []
+
+
+def test_model_signal_healthcheck_warns_when_signal_age_exceeds_threshold() -> None:
+    artifact = _valid_artifact()
+    manifest = _manifest(artifact)
+
+    summary, warnings = run_model_signal_healthcheck(
+        artifact,
+        manifest,
+        max_signal_age_days=3,
+        reference_date="2024-01-07",
+    )
+
+    row = summary.iloc[0]
+    assert row["status"] == "warning"
+    assert row["signal_age_days"] == 4
+    assert bool(row["stale_signal"])
+    assert warnings == [
+        "latest_signal_date is stale: age 4 days exceeds max_signal_age_days 3"
+    ]
+
+
+def test_model_signal_healthcheck_fails_when_stale_as_failure() -> None:
+    artifact = _valid_artifact()
+    manifest = _manifest(artifact)
+
+    summary, warnings = run_model_signal_healthcheck(
+        artifact,
+        manifest,
+        max_signal_age_days=3,
+        reference_date="2024-01-07",
+        stale_as_failure=True,
+    )
+
+    row = summary.iloc[0]
+    assert row["status"] == "failed"
+    assert bool(row["stale_as_failure"])
+    assert bool(row["stale_signal"])
+    assert warnings == [
+        "latest_signal_date is stale: age 4 days exceeds max_signal_age_days 3"
+    ]
+
+
+def test_model_signal_healthcheck_staleness_works_without_expected_latest_date() -> None:
+    artifact = _valid_artifact()
+    manifest = _manifest(artifact)
+
+    summary, warnings = run_model_signal_healthcheck(
+        artifact,
+        manifest,
+        max_signal_age_days=0,
+        reference_date="2024-01-04",
+    )
+
+    assert summary.iloc[0]["status"] == "warning"
+    assert summary.iloc[0]["signal_age_days"] == 1
+    assert bool(summary.iloc[0]["stale_signal"])
+    assert warnings == [
+        "latest_signal_date is stale: age 1 days exceeds max_signal_age_days 0"
+    ]
 
 
 def test_model_signal_healthcheck_warns_when_no_top_signal() -> None:

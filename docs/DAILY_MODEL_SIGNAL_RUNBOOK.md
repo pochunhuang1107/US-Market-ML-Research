@@ -59,12 +59,23 @@ us-market-ml-daily-signal-healthcheck \
   --manifest-path artifacts/model_signals_daily/model_version=linear_smooth10_margin002_v1/model_signal_manifest.json \
   --model-version linear_smooth10_margin002_v1 \
   --min-symbol-count 2 \
+  --max-signal-age-days 3 \
   --output-path artifacts/model_signals_daily/model_version=linear_smooth10_margin002_v1/healthcheck.csv \
   --warnings-output-path artifacts/model_signals_daily/model_version=linear_smooth10_margin002_v1/healthcheck_warnings.txt
 ```
 
 The command returns `0` when status is `ready` or `warning`, and `1` when
 status is `failed`. Do not pass a failed artifact to the simulation platform.
+By default, freshness violations are warnings. Pass `--stale-as-failure` when
+the local operator wants a stale latest signal date to return nonzero.
+
+The `--max-signal-age-days` threshold compares the artifact's
+`latest_signal_date` with the operator's reference date. The reference date
+defaults to the current UTC date, or it can be pinned with `--reference-date`
+for deterministic backfills and incident review. A threshold of `3` days is a
+reasonable starting point for normal daily checks; local operators may use
+`3` to `5` days depending on weekends, market holidays, and source data update
+cadence.
 
 ## Inspect Latest Top Signal
 
@@ -91,11 +102,20 @@ result before using it downstream. Common warnings include:
 - latest signal date does not match an expected date;
 - symbol count is lower than the configured minimum;
 - no row has `signal_bucket == "top"`;
+- latest signal date is older than `--max-signal-age-days`;
 - manifest `artifact_path` differs from the checked path;
 - export-time warnings were already recorded in `model_signal_manifest.json`.
 
 Warnings are not automatic failures, but they should be resolved or explicitly
 accepted before platform ingestion.
+
+A stale latest signal date usually means one of:
+
+- the local cache was not refreshed;
+- `--latest-date` was hardcoded to an old market date;
+- upstream market data ingestion did not run;
+- the latest available market date is genuinely old because of a weekend,
+  holiday, or data source delay.
 
 ## What Not To Do
 
