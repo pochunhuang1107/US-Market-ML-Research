@@ -16,3 +16,6 @@ data/
 # Local one-off experiment runner scripts
 scripts/run_*_sweep*.sh
 scripts/*_with_progress.sh
+
+# Local shell runners
+*.sh
