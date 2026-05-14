@@ -147,6 +147,16 @@ def test_build_sweep_run_key_is_deterministic_and_changes_with_hyperparameters(
     assert cost_key != unscaled_key
     assert "cost-10bps" in cost_key
 
+    feature_key = build_sweep_run_key(
+        universe,
+        fold,
+        model,
+        signal,
+        feature_set_version="technical_features_v2",
+    )
+    assert feature_key != unscaled_key
+    assert "features-technical-features-v2" in feature_key
+
 
 def test_run_sweep_runs_baseline_and_writes_results_and_completed_checkpoint(
     tmp_path: Path,
@@ -187,6 +197,33 @@ def test_run_sweep_result_rows_include_label_horizon_days(tmp_path: Path) -> Non
 
     assert "label_horizon_days" in results.columns
     assert results["label_horizon_days"].tolist() == [20, 20, 20]
+
+
+def test_run_sweep_result_rows_include_feature_set_version_and_feature_count(
+    tmp_path: Path,
+) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = SweepRunConfig(
+        universes=[SweepUniverseConfig(name="core", data_path=data_path)],
+        folds=[_fold()],
+        models=[SweepModelConfig(model_family="baseline", model_type="ridge")],
+        signals=[SweepSignalConfig(top_k=2)],
+        feature_set_versions=["technical_features_v2"],
+        output_dir=tmp_path / "sweeps",
+        run_name="features_v2",
+    )
+
+    results = run_sweep(config)
+
+    assert "feature_set_version" in results.columns
+    assert "feature_count" in results.columns
+    assert results["feature_set_version"].tolist() == [
+        "technical_features_v2",
+        "technical_features_v2",
+        "technical_features_v2",
+    ]
+    assert results["feature_count"].gt(0).all()
 
 
 def test_run_sweep_result_rows_include_smoothing_parameters(tmp_path: Path) -> None:
@@ -250,9 +287,11 @@ def test_run_one_configuration_result_rows_include_mlp_scale_target(
         signal_config: SweepSignalConfig,
         run_config: SweepRunConfig,
         transaction_cost_bps: float,
+        feature_set_version: str,
     ) -> pd.DataFrame:
         assert model_config.scale_target is True
         assert transaction_cost_bps == 0.0
+        assert feature_set_version == "default_features_v1"
         return pd.DataFrame(
             [
                 {

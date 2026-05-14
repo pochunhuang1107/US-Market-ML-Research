@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from us_market_ml.cli.run_sweep import (
+    parse_feature_set_versions,
     parse_float_list,
     parse_fold,
     parse_hidden_units,
@@ -216,6 +217,49 @@ def test_run_sweep_from_args_accepts_transaction_cost_grid(
 
     assert return_code == 0
     assert observed_transaction_costs == [0.0, 5.0, 10.0]
+
+
+def test_run_sweep_from_args_accepts_feature_set_version_grid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_feature_sets: list[str] = []
+
+    def fake_run_sweep(config: Any) -> pd.DataFrame:
+        observed_feature_sets.extend(config.feature_set_versions)
+        return pd.DataFrame()
+
+    monkeypatch.setattr("us_market_ml.cli.run_sweep.run_sweep", fake_run_sweep)
+
+    return_code = run_sweep_from_args(
+        [
+            "--run-name",
+            "cli_features",
+            "--output-dir",
+            str(tmp_path / "sweeps"),
+            "--universe",
+            "core:data/curated/etf_daily_ohlcv.parquet",
+            "--fold",
+            "fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30",
+            "--model-family",
+            "baseline",
+            "--baseline-models",
+            "ridge",
+            "--top-k",
+            "1",
+            "--feature-set-versions",
+            "default_features_v1,technical_features_v2",
+        ]
+    )
+
+    assert return_code == 0
+    assert observed_feature_sets == ["default_features_v1", "technical_features_v2"]
+
+
+def test_parse_feature_set_versions_validates_supported_versions() -> None:
+    assert parse_feature_set_versions("default_features_v1") == ["default_features_v1"]
+    with pytest.raises(Exception, match="Unsupported feature_set_version"):
+        parse_feature_set_versions("unknown_features")
 
 
 def test_run_sweep_from_args_accepts_scale_target_for_mlp(

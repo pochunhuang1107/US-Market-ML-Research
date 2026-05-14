@@ -85,6 +85,20 @@ The local reader validates required OHLCV columns, parses `date`, sorts by
 `month`, and `transactions`. It does not read S3, build features or labels,
 write artifacts, or mutate source files.
 
+## Feature Sets
+
+Feature engineering is versioned so sweeps can compare research datasets while
+keeping the default baseline unchanged:
+
+- `default_features_v1`: original/current leakage-safe OHLCV feature set.
+- `technical_features_v2`: expanded OHLCV-only technical feature set with
+  additional momentum, volatility, trend, liquidity, cross-sectional rank, and
+  benchmark-relative features.
+
+No external data is required for either feature set. Feature engineering remains
+research-only and is still subject to walk-forward validation before any
+candidate is promoted.
+
 ## S3 Curated ETF Data Loading
 
 S3 loading is optional and uses the curated ETF parquet layout produced by
