@@ -13,8 +13,11 @@ import numpy as np
 import pandas as pd
 
 RETURN_LOOKBACKS: tuple[int, ...] = (1, 5, 10, 20, 60)
+TECHNICAL_V2_RETURN_LOOKBACKS: tuple[int, ...] = (1, 3, 5, 10, 20, 60)
 SMA_LOOKBACKS: tuple[int, ...] = (20, 50, 200)
+TECHNICAL_V2_SMA_LOOKBACKS: tuple[int, ...] = (10, 20, 50)
 VOLATILITY_LOOKBACKS: tuple[int, ...] = (10, 20, 60)
+TECHNICAL_V2_VOLATILITY_LOOKBACKS: tuple[int, ...] = (5, 10, 20, 60)
 RSI_LOOKBACK = 14
 VOLUME_ZSCORE_LOOKBACK = 20
 
@@ -143,3 +146,83 @@ def add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
     out = add_rsi_feature(out)
     out = add_macd_features(out)
     return add_volume_features(out)
+
+
+def add_technical_v2_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add expanded OHLCV-only technical features for research feature set v2."""
+
+    out = df.copy()
+    grouped_close = out.groupby("symbol", sort=False)["close"]
+
+    for lookback in TECHNICAL_V2_RETURN_LOOKBACKS:
+        column = f"return_{lookback}d"
+        if column not in out.columns:
+            out[column] = grouped_close.pct_change(periods=lookback)
+
+    for lookback in TECHNICAL_V2_SMA_LOOKBACKS:
+        sma_column = f"_sma_{lookback}"
+        out[sma_column] = grouped_close.transform(
+            lambda close, window=lookback: close.rolling(
+                window=window,
+                min_periods=window,
+            ).mean()
+        )
+        feature_column = f"close_to_sma_{lookback}"
+        if feature_column not in out.columns:
+            out[feature_column] = out["close"] / out[sma_column] - 1.0
+
+    out["sma_10_to_sma_50"] = out["_sma_10"] / out["_sma_50"] - 1.0
+    out["sma_20_to_sma_50"] = out["_sma_20"] / out["_sma_50"] - 1.0
+
+    out["_daily_return"] = grouped_close.pct_change()
+    grouped_returns = out.groupby("symbol", sort=False)["_daily_return"]
+    for lookback in TECHNICAL_V2_VOLATILITY_LOOKBACKS:
+        out[f"volatility_{lookback}d"] = grouped_returns.transform(
+            lambda returns, window=lookback: returns.rolling(
+                window=window,
+                min_periods=window,
+            ).std()
+        )
+
+    out["downside_volatility_20d"] = (
+        out["_daily_return"]
+        .clip(upper=0.0)
+        .groupby(out["symbol"], sort=False)
+        .transform(lambda returns: returns.rolling(window=20, min_periods=20).std())
+    )
+
+    for lookback in (20, 60):
+        out[f"rolling_max_drawdown_{lookback}d"] = grouped_close.transform(
+            lambda close, window=lookback: close.rolling(
+                window=window,
+                min_periods=window,
+            ).apply(_max_drawdown, raw=True)
+        )
+
+    grouped_volume = out.groupby("symbol", sort=False)["volume"]
+    for lookback in (5, 20):
+        out[f"volume_change_{lookback}d"] = grouped_volume.pct_change(periods=lookback)
+
+    out["_dollar_volume"] = out["close"] * out["volume"]
+    out["dollar_volume_20d"] = out.groupby("symbol", sort=False)["_dollar_volume"].transform(
+        lambda dollar_volume: dollar_volume.rolling(window=20, min_periods=20).mean()
+    )
+    out["dollar_volume_change_20d"] = out.groupby("symbol", sort=False)[
+        "dollar_volume_20d"
+    ].pct_change(periods=20)
+
+    return out.drop(
+        columns=[
+            "_daily_return",
+            "_dollar_volume",
+            "_sma_10",
+            "_sma_20",
+            "_sma_50",
+        ]
+    )
+
+
+def _max_drawdown(values: np.ndarray) -> float:
+    peaks = np.maximum.accumulate(values)
+    drawdowns = values / peaks - 1.0
+    return float(np.nanmin(drawdowns))

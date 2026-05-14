@@ -17,7 +17,12 @@ from dataclasses import dataclass
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_numeric_dtype
 
-from us_market_ml.features import build_feature_frame
+from us_market_ml.features import (
+    DEFAULT_FEATURE_SET_VERSION,
+    FeatureSetConfig,
+    build_feature_frame,
+    validate_feature_set_version,
+)
 from us_market_ml.labels import (
     add_cross_sectional_rank_labels,
     add_excess_return_vs_benchmark,
@@ -28,6 +33,34 @@ TARGET_COLUMN_PREFIXES: tuple[str, ...] = (
     "forward_return_",
     "excess_return_vs_",
     "rank_",
+)
+TECHNICAL_FEATURES_V2_ONLY: frozenset[str] = frozenset(
+    {
+        "return_3d",
+        "volatility_5d",
+        "volatility_10d",
+        "volatility_20d",
+        "volatility_60d",
+        "downside_volatility_20d",
+        "rolling_max_drawdown_20d",
+        "rolling_max_drawdown_60d",
+        "close_to_sma_10",
+        "sma_10_to_sma_50",
+        "sma_20_to_sma_50",
+        "volume_change_5d",
+        "volume_change_20d",
+        "dollar_volume_20d",
+        "dollar_volume_change_20d",
+        "return_20d_rank_pct",
+        "return_60d_rank_pct",
+        "volatility_20d_rank_pct",
+        "close_to_sma_20_rank_pct",
+        "dollar_volume_20d_rank_pct",
+        "relative_strength_vs_spy_20d",
+        "relative_strength_vs_qqq_20d",
+        "beta_to_spy_60d",
+        "correlation_to_spy_60d",
+    }
 )
 
 
@@ -46,6 +79,7 @@ class SupervisedDatasetConfig:
     rank_target_col: str | None = "excess_return_vs_spy_20d"
     rank_col: str | None = "rank_excess_return_vs_spy_20d"
     price_col: str = "close"
+    feature_set_version: str = DEFAULT_FEATURE_SET_VERSION
 
 
 def build_supervised_dataset(
@@ -63,7 +97,10 @@ def build_supervised_dataset(
 
     resolved_config = config if config is not None else SupervisedDatasetConfig()
 
-    out = build_feature_frame(df.copy())
+    out = build_feature_frame(
+        df.copy(),
+        FeatureSetConfig(feature_set_version=resolved_config.feature_set_version),
+    )
     out = add_forward_returns(
         out,
         horizons=resolved_config.forward_horizons,
@@ -120,6 +157,7 @@ def get_default_non_feature_columns() -> set[str]:
 
 def get_feature_columns(
     df: pd.DataFrame,
+    feature_set_version: str = DEFAULT_FEATURE_SET_VERSION,
     extra_exclude: set[str] | None = None,
 ) -> list[str]:
     """Return numeric historical feature columns with leakage targets removed.
@@ -130,8 +168,11 @@ def get_feature_columns(
     future data.
     """
 
+    validate_feature_set_version(feature_set_version)
     excluded_columns = get_default_non_feature_columns()
     excluded_columns.update(get_target_columns(df))
+    if feature_set_version == DEFAULT_FEATURE_SET_VERSION:
+        excluded_columns.update(TECHNICAL_FEATURES_V2_ONLY)
     if extra_exclude is not None:
         excluded_columns.update(extra_exclude)
 

@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from itertools import product
 from pathlib import Path
 
+from us_market_ml.data import DEFAULT_FEATURE_SET_VERSION, validate_feature_set_version
 from us_market_ml.experiments import (
     SweepFoldConfig,
     SweepModelConfig,
@@ -41,6 +42,7 @@ def run_sweep_from_args(argv: list[str] | None = None) -> int:
         ],
         target_col=args.target_col,
         label_horizon_days=args.label_horizon_days,
+        feature_set_versions=args.feature_set_versions,
         transaction_cost_bps_values=args.transaction_cost_bps,
         output_dir=args.output_dir,
         run_name=args.run_name,
@@ -172,6 +174,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--target-col", default="excess_return_vs_spy_20d")
     parser.add_argument("--label-horizon-days", type=int, default=0)
     parser.add_argument(
+        "--feature-set-versions",
+        type=parse_feature_set_versions,
+        default=parse_feature_set_versions(DEFAULT_FEATURE_SET_VERSION),
+        help=(
+            "Comma-separated feature set grid. Supported values: "
+            "default_features_v1,technical_features_v2."
+        ),
+    )
+    parser.add_argument(
         "--transaction-cost-bps",
         type=parse_float_list,
         default=parse_float_list("0"),
@@ -235,6 +246,18 @@ def _build_model_configs(args: argparse.Namespace) -> list[SweepModelConfig]:
                 )
             )
     return models
+
+
+def parse_feature_set_versions(value: str) -> list[str]:
+    """Parse comma-separated feature set versions."""
+
+    versions = _parse_string_list(value)
+    for version in versions:
+        try:
+            validate_feature_set_version(version)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from exc
+    return versions
 
 
 def _parse_string_list(value: str) -> list[str]:

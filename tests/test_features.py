@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from us_market_ml.data import get_feature_columns, get_target_columns
 from us_market_ml.features import add_cross_asset_features, build_feature_frame
 
 EXPECTED_FEATURE_COLUMNS = {
@@ -30,6 +31,39 @@ EXPECTED_FEATURE_COLUMNS = {
     "gld_spy_return_ratio_20d",
     "hyg_lqd_return_ratio_20d",
     "xlk_xlf_return_ratio_20d",
+}
+EXPECTED_TECHNICAL_V2_COLUMNS = {
+    "return_1d",
+    "return_3d",
+    "return_5d",
+    "return_10d",
+    "return_20d",
+    "return_60d",
+    "volatility_5d",
+    "volatility_10d",
+    "volatility_20d",
+    "volatility_60d",
+    "downside_volatility_20d",
+    "rolling_max_drawdown_20d",
+    "rolling_max_drawdown_60d",
+    "close_to_sma_10",
+    "close_to_sma_20",
+    "close_to_sma_50",
+    "sma_10_to_sma_50",
+    "sma_20_to_sma_50",
+    "volume_change_5d",
+    "volume_change_20d",
+    "dollar_volume_20d",
+    "dollar_volume_change_20d",
+    "return_20d_rank_pct",
+    "return_60d_rank_pct",
+    "volatility_20d_rank_pct",
+    "close_to_sma_20_rank_pct",
+    "dollar_volume_20d_rank_pct",
+    "relative_strength_vs_spy_20d",
+    "relative_strength_vs_qqq_20d",
+    "beta_to_spy_60d",
+    "correlation_to_spy_60d",
 }
 
 
@@ -66,6 +100,68 @@ def test_build_feature_frame_adds_expected_columns_and_preserves_input_columns()
     assert EXPECTED_FEATURE_COLUMNS.issubset(features.columns)
     assert "source_column" in features.columns
     assert len(features) == len(df)
+
+
+def test_default_feature_set_version_keeps_existing_feature_columns() -> None:
+    df = _ohlcv_frame(["SPY", "QQQ"], periods=80)
+
+    default_features = build_feature_frame(df)
+    explicit_default_features = build_feature_frame(df, "default_features_v1")
+
+    assert list(explicit_default_features.columns) == list(default_features.columns)
+    assert "return_3d" not in explicit_default_features.columns
+    assert "volatility_5d" not in explicit_default_features.columns
+
+    v2_features = build_feature_frame(df, "technical_features_v2")
+    default_feature_cols = get_feature_columns(v2_features)
+    assert "return_3d" not in default_feature_cols
+    assert "volatility_5d" not in default_feature_cols
+
+
+def test_technical_features_v2_adds_expected_columns() -> None:
+    df = _ohlcv_frame(["SPY", "QQQ", "IWM"], periods=90)
+
+    features = build_feature_frame(df, "technical_features_v2")
+
+    assert EXPECTED_TECHNICAL_V2_COLUMNS.issubset(features.columns)
+    assert len(features) == len(df)
+
+
+def test_technical_features_v2_feature_columns_exclude_targets_and_labels() -> None:
+    features = build_feature_frame(
+        _ohlcv_frame(["SPY", "QQQ"], periods=90),
+        "technical_features_v2",
+    )
+    features["forward_return_20d"] = 0.1
+    features["excess_return_vs_spy_20d"] = 0.2
+    features["rank_excess_return_vs_spy_20d"] = 1.0
+
+    feature_cols = get_feature_columns(features, feature_set_version="technical_features_v2")
+
+    assert get_target_columns(features)
+    assert set(get_target_columns(features)).isdisjoint(feature_cols)
+    assert "forward_return_20d" not in feature_cols
+    assert "excess_return_vs_spy_20d" not in feature_cols
+    assert "rank_excess_return_vs_spy_20d" not in feature_cols
+
+
+def test_technical_features_v2_cross_sectional_rank_pct_columns_are_bounded() -> None:
+    features = build_feature_frame(
+        _ohlcv_frame(["SPY", "QQQ", "IWM"], periods=90),
+        "technical_features_v2",
+    )
+    rank_columns = [
+        "return_20d_rank_pct",
+        "return_60d_rank_pct",
+        "volatility_20d_rank_pct",
+        "close_to_sma_20_rank_pct",
+        "dollar_volume_20d_rank_pct",
+    ]
+
+    for column in rank_columns:
+        non_null_values = features[column].dropna()
+        assert not non_null_values.empty
+        assert non_null_values.between(0.0, 1.0).all()
 
 
 def test_return_features_do_not_leak_across_symbols() -> None:

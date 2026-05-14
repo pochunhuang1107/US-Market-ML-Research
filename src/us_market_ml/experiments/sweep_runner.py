@@ -18,7 +18,11 @@ import numpy as np
 import pandas as pd
 
 from us_market_ml.backtest import SignalBacktestConfig, SignalSmoothingConfig, TopKSignalConfig
-from us_market_ml.data import read_local_market_data
+from us_market_ml.data import (
+    DEFAULT_FEATURE_SET_VERSION,
+    read_local_market_data,
+    validate_feature_set_version,
+)
 from us_market_ml.experiments.baseline_e2e import (
     BaselineE2EExperimentConfig,
     run_baseline_e2e_experiment,
@@ -42,6 +46,8 @@ RESULT_COLUMNS = [
     "split",
     "model_family",
     "model_type",
+    "feature_set_version",
+    "feature_count",
     "hidden_units",
     "dropout",
     "scale_target",
@@ -140,6 +146,9 @@ class SweepRunConfig:
     initial_equity: float = 1.0
     prediction_col: str = "prediction"
     label_horizon_days: int = 0
+    feature_set_versions: list[str] = field(
+        default_factory=lambda: [DEFAULT_FEATURE_SET_VERSION]
+    )
     min_holding_days: int = 1
     switch_margin: float = 0.0
     transaction_cost_bps_values: list[float] = field(default_factory=lambda: [0.0])
@@ -157,6 +166,7 @@ def build_sweep_run_key(
     min_holding_days: int | None = None,
     switch_margin: float | None = None,
     transaction_cost_bps: float = 0.0,
+    feature_set_version: str = DEFAULT_FEATURE_SET_VERSION,
 ) -> str:
     """Return a deterministic key for one universe/fold/model/signal run."""
 
@@ -174,6 +184,7 @@ def build_sweep_run_key(
         "min_holding_days": effective_min_holding_days,
         "switch_margin": effective_switch_margin,
         "transaction_cost_bps": transaction_cost_bps,
+        "feature_set_version": feature_set_version,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:12]
@@ -198,6 +209,7 @@ def build_sweep_run_key(
             f"margin-{effective_switch_margin:g}",
             f"cost-{transaction_cost_bps:g}bps",
             f"horizon-{label_horizon_days}d",
+            f"features-{_slug(feature_set_version)}",
             f"seed-{model.random_state}",
             digest,
         ]
@@ -236,40 +248,43 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
             fold = _to_walk_forward_fold(fold_config)
             for model_config in config.models:
                 for signal_config in config.signals:
-                    for transaction_cost_bps in config.transaction_cost_bps_values:
-                        run_key = build_sweep_run_key(
-                            universe=universe,
-                            fold=fold_config,
-                            model=model_config,
-                            signal=signal_config,
-                            label_horizon_days=config.label_horizon_days,
-                            min_holding_days=config.min_holding_days,
-                            switch_margin=config.switch_margin,
-                            transaction_cost_bps=transaction_cost_bps,
-                        )
-                        if config.resume and run_key in completed_keys:
-                            continue
-
-                        try:
-                            run_rows = _run_one_configuration(
-                                raw_df=raw_df,
+                    for feature_set_version in config.feature_set_versions:
+                        for transaction_cost_bps in config.transaction_cost_bps_values:
+                            run_key = build_sweep_run_key(
                                 universe=universe,
-                                fold=fold,
+                                fold=fold_config,
                                 model=model_config,
                                 signal=signal_config,
-                                config=config,
-                                run_key=run_key,
+                                label_horizon_days=config.label_horizon_days,
+                                min_holding_days=config.min_holding_days,
+                                switch_margin=config.switch_margin,
                                 transaction_cost_bps=transaction_cost_bps,
+                                feature_set_version=feature_set_version,
                             )
-                        except Exception as exc:  # noqa: BLE001 - continue remaining sweep runs.
-                            _append_failed_key(failed_path, run_key, exc)
-                            continue
+                            if config.resume and run_key in completed_keys:
+                                continue
 
-                        run_results = pd.DataFrame(run_rows, columns=RESULT_COLUMNS)
-                        _append_results(results_path, run_results)
-                        _append_line(completed_path, run_key)
-                        completed_keys.add(run_key)
-                        results_frames.append(run_results)
+                            try:
+                                run_rows = _run_one_configuration(
+                                    raw_df=raw_df,
+                                    universe=universe,
+                                    fold=fold,
+                                    model=model_config,
+                                    signal=signal_config,
+                                    config=config,
+                                    run_key=run_key,
+                                    transaction_cost_bps=transaction_cost_bps,
+                                    feature_set_version=feature_set_version,
+                                )
+                            except Exception as exc:  # noqa: BLE001 - continue remaining sweep runs.
+                                _append_failed_key(failed_path, run_key, exc)
+                                continue
+
+                            run_results = pd.DataFrame(run_rows, columns=RESULT_COLUMNS)
+                            _append_results(results_path, run_results)
+                            _append_line(completed_path, run_key)
+                            completed_keys.add(run_key)
+                            results_frames.append(run_results)
 
     if not results_frames:
         return pd.DataFrame(columns=RESULT_COLUMNS)
@@ -284,6 +299,8 @@ def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:
         "universe",
         "model_family",
         "model_type",
+        "feature_set_version",
+        "feature_count",
         "top_k",
         "min_holding_days",
         "switch_margin",
@@ -306,6 +323,10 @@ def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=summary_columns)
     if "scale_target" not in test_rows.columns:
         test_rows["scale_target"] = False
+    if "feature_set_version" not in test_rows.columns:
+        test_rows["feature_set_version"] = DEFAULT_FEATURE_SET_VERSION
+    if "feature_count" not in test_rows.columns:
+        test_rows["feature_count"] = np.nan
     if "min_holding_days" not in test_rows.columns:
         test_rows["min_holding_days"] = 1
     if "switch_margin" not in test_rows.columns:
@@ -319,6 +340,8 @@ def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:
         "universe",
         "model_family",
         "model_type",
+        "feature_set_version",
+        "feature_count",
         "top_k",
         "min_holding_days",
         "switch_margin",
@@ -352,11 +375,33 @@ def _run_one_configuration(
     config: SweepRunConfig,
     run_key: str,
     transaction_cost_bps: float = 0.0,
+    feature_set_version: str | None = None,
 ) -> list[dict[str, object]]:
+    resolved_feature_set_version = (
+        feature_set_version
+        if feature_set_version is not None
+        else config.feature_set_versions[0]
+    )
     if model.model_family == "baseline":
-        summary = _run_baseline(raw_df, fold, model, signal, config, transaction_cost_bps)
+        summary = _run_baseline(
+            raw_df,
+            fold,
+            model,
+            signal,
+            config,
+            transaction_cost_bps,
+            resolved_feature_set_version,
+        )
     elif model.model_family == "mlp":
-        summary = _run_mlp(raw_df, fold, model, signal, config, transaction_cost_bps)
+        summary = _run_mlp(
+            raw_df,
+            fold,
+            model,
+            signal,
+            config,
+            transaction_cost_bps,
+            resolved_feature_set_version,
+        )
     else:
         raise ValueError(f"Unsupported model_family: {model.model_family!r}")
 
@@ -371,6 +416,8 @@ def _run_one_configuration(
                 "split": summary_row["split"],
                 "model_family": model.model_family,
                 "model_type": summary_row["model_type"],
+                "feature_set_version": resolved_feature_set_version,
+                "feature_count": summary_row.get("feature_count", np.nan),
                 "hidden_units": _format_hidden_units(model),
                 "dropout": model.dropout if model.model_family == "mlp" else np.nan,
                 "scale_target": model.scale_target if model.model_family == "mlp" else False,
@@ -408,6 +455,7 @@ def _run_baseline(
     signal: SweepSignalConfig,
     config: SweepRunConfig,
     transaction_cost_bps: float,
+    feature_set_version: str,
 ) -> pd.DataFrame:
     experiment_config = BaselineE2EExperimentConfig(
         baseline_config=BaselineExperimentConfig(
@@ -417,6 +465,7 @@ def _run_baseline(
                 random_state=model.random_state,
             ),
             prediction_col=config.prediction_col,
+            feature_set_version=feature_set_version,
             purge_config=_purge_config_from_sweep(config),
         ),
         signal_config=TopKSignalConfig(
@@ -430,7 +479,9 @@ def _run_baseline(
         smoothing_config=_smoothing_config_from_sweep_signal(signal, config),
     )
     result = run_baseline_e2e_experiment(raw_df, [fold], experiment_config)
-    return summarize_baseline_e2e_experiment(result)
+    summary = summarize_baseline_e2e_experiment(result)
+    summary["feature_count"] = len(result.baseline_result.feature_cols)
+    return summary
 
 
 def _run_mlp(
@@ -440,6 +491,7 @@ def _run_mlp(
     signal: SweepSignalConfig,
     config: SweepRunConfig,
     transaction_cost_bps: float,
+    feature_set_version: str,
 ) -> pd.DataFrame:
     experiment_config = MLPE2EExperimentConfig(
         mlp_config=MLPExperimentConfig(
@@ -457,6 +509,7 @@ def _run_mlp(
                 scale_target=model.scale_target,
             ),
             prediction_col=config.prediction_col,
+            feature_set_version=feature_set_version,
             purge_config=_purge_config_from_sweep(config),
         ),
         signal_config=TopKSignalConfig(
@@ -470,7 +523,9 @@ def _run_mlp(
         smoothing_config=_smoothing_config_from_sweep_signal(signal, config),
     )
     result = run_mlp_e2e_experiment(raw_df, [fold], experiment_config)
-    return summarize_mlp_e2e_experiment(result)
+    summary = summarize_mlp_e2e_experiment(result)
+    summary["feature_count"] = len(result.mlp_result.feature_cols)
+    return summary
 
 
 def _validate_sweep_config(config: SweepRunConfig) -> None:
@@ -482,6 +537,10 @@ def _validate_sweep_config(config: SweepRunConfig) -> None:
         raise ValueError("At least one model is required.")
     if not config.signals:
         raise ValueError("At least one signal is required.")
+    if not config.feature_set_versions:
+        raise ValueError("At least one feature_set_version is required.")
+    for feature_set_version in config.feature_set_versions:
+        validate_feature_set_version(feature_set_version)
     if config.label_horizon_days < 0:
         raise ValueError("label_horizon_days must be greater than or equal to 0.")
     if config.min_holding_days < 1:

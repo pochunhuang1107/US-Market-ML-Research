@@ -25,11 +25,22 @@ from us_market_ml.data.s3_reader import (
     read_s3_parquet_files,
     read_s3_parquet_object,
 )
+from us_market_ml.features import (
+    DEFAULT_FEATURE_SET_VERSION,
+    SUPPORTED_FEATURE_SET_VERSIONS,
+    TECHNICAL_FEATURE_SET_VERSION,
+    FeatureSetConfig,
+    validate_feature_set_version,
+)
 
 __all__ = [
+    "DEFAULT_FEATURE_SET_VERSION",
+    "FeatureSetConfig",
     "LocalMarketDataConfig",
     "S3MarketDataConfig",
     "SupervisedDatasetConfig",
+    "SUPPORTED_FEATURE_SET_VERSIONS",
+    "TECHNICAL_FEATURE_SET_VERSION",
     "build_curated_etf_s3_key",
     "build_curated_etf_s3_uri",
     "build_s3_storage_options",
@@ -45,5 +56,6 @@ __all__ = [
     "read_s3_curated_etf_data",
     "read_s3_parquet_object",
     "read_s3_parquet_files",
+    "validate_feature_set_version",
     "validate_market_data_columns",
 ]

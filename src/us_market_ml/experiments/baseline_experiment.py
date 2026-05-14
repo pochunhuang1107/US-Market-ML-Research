@@ -13,12 +13,13 @@ selection or fitting steps.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
 
 from us_market_ml.data import (
+    DEFAULT_FEATURE_SET_VERSION,
     SupervisedDatasetConfig,
     build_supervised_dataset,
     get_feature_columns,
@@ -45,6 +46,7 @@ class BaselineExperimentConfig:
     target_col: str = "excess_return_vs_spy_20d"
     model_config: BaselineModelConfig = field(default_factory=BaselineModelConfig)
     dataset_config: SupervisedDatasetConfig = field(default_factory=SupervisedDatasetConfig)
+    feature_set_version: str = DEFAULT_FEATURE_SET_VERSION
     prediction_col: str = "prediction"
     extra_exclude_feature_cols: set[str] | None = None
     purge_config: PurgeConfig | None = None
@@ -94,9 +96,15 @@ def run_baseline_experiment(
 
     resolved_config = config if config is not None else BaselineExperimentConfig()
 
-    dataset = build_supervised_dataset(raw_df, resolved_config.dataset_config)
+    feature_set_version = _resolve_feature_set_version(resolved_config)
+    dataset_config = replace(
+        resolved_config.dataset_config,
+        feature_set_version=feature_set_version,
+    )
+    dataset = build_supervised_dataset(raw_df, dataset_config)
     feature_cols = get_feature_columns(
         dataset,
+        feature_set_version=feature_set_version,
         extra_exclude=resolved_config.extra_exclude_feature_cols,
     )
 
@@ -194,6 +202,12 @@ def summarize_baseline_experiment(result: BaselineExperimentResult) -> pd.DataFr
         )
 
     return pd.DataFrame(rows)
+
+
+def _resolve_feature_set_version(config: BaselineExperimentConfig) -> str:
+    if config.feature_set_version != DEFAULT_FEATURE_SET_VERSION:
+        return config.feature_set_version
+    return config.dataset_config.feature_set_version
 
 
 __all__ = [

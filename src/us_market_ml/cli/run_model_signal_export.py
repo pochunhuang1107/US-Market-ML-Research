@@ -12,7 +12,11 @@ from us_market_ml.cli.run_candidate_comparison_report import (
     _run_candidate_experiment,
     parse_candidate_config,
 )
-from us_market_ml.data import read_local_market_data
+from us_market_ml.data import (
+    DEFAULT_FEATURE_SET_VERSION,
+    read_local_market_data,
+    validate_feature_set_version,
+)
 from us_market_ml.exports import build_model_signal_artifact, validate_model_signal_artifact
 from us_market_ml.splits import WalkForwardFold
 
@@ -77,7 +81,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--model-version", required=True)
-    parser.add_argument("--feature-set-version")
+    parser.add_argument("--feature-set-version", default=DEFAULT_FEATURE_SET_VERSION)
     parser.add_argument("--created-at")
     parser.add_argument("--train-start", type=pd.Timestamp, required=True)
     parser.add_argument("--train-end", type=pd.Timestamp, required=True)
@@ -102,10 +106,13 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     args.model_version = args.model_version.strip()
     if not args.model_version:
         parser.error("--model-version must be non-empty.")
-    if args.feature_set_version is not None:
-        args.feature_set_version = args.feature_set_version.strip()
-        if not args.feature_set_version:
-            parser.error("--feature-set-version must be non-empty when provided.")
+    args.feature_set_version = args.feature_set_version.strip()
+    if not args.feature_set_version:
+        parser.error("--feature-set-version must be non-empty.")
+    try:
+        validate_feature_set_version(args.feature_set_version)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.max_epochs <= 0:
         parser.error("--max-epochs must be positive.")
     if args.patience <= 0:

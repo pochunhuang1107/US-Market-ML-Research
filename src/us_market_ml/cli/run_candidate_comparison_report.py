@@ -26,7 +26,11 @@ from us_market_ml.cli.run_benchmark_report import (
     parse_hidden_units,
 )
 from us_market_ml.cli.run_walk_forward_benchmark_report import parse_walk_forward_fold
-from us_market_ml.data import read_local_market_data
+from us_market_ml.data import (
+    DEFAULT_FEATURE_SET_VERSION,
+    read_local_market_data,
+    validate_feature_set_version,
+)
 from us_market_ml.experiments import (
     BaselineE2EExperimentConfig,
     BaselineE2EExperimentResult,
@@ -473,6 +477,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--universe-symbols", type=parse_comma_separated_symbols)
     parser.add_argument("--target-col", default="excess_return_vs_spy_20d")
+    parser.add_argument("--feature-set-version", default=DEFAULT_FEATURE_SET_VERSION)
     parser.add_argument(
         "--scale-target",
         action=argparse.BooleanOptionalAction,
@@ -508,6 +513,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--min-holding-days must be greater than or equal to 1.")
     if args.switch_margin < 0.0:
         parser.error("--switch-margin must be greater than or equal to 0.")
+    args.feature_set_version = args.feature_set_version.strip()
+    try:
+        validate_feature_set_version(args.feature_set_version)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     return args
 
@@ -556,6 +566,12 @@ def _build_mlp_experiment_config(
                 random_state=candidate.random_state,
                 scale_target=args.scale_target,
             ),
+            feature_set_version=getattr(
+                args,
+                "feature_set_version",
+                DEFAULT_FEATURE_SET_VERSION,
+            )
+            or DEFAULT_FEATURE_SET_VERSION,
             purge_config=_build_purge_config(args),
         ),
         signal_config=TopKSignalConfig(top_k=candidate.top_k),
@@ -589,6 +605,12 @@ def _build_baseline_experiment_config(
                 model_type=candidate.model_type,
                 random_state=candidate.random_state,
             ),
+            feature_set_version=getattr(
+                args,
+                "feature_set_version",
+                DEFAULT_FEATURE_SET_VERSION,
+            )
+            or DEFAULT_FEATURE_SET_VERSION,
             purge_config=_build_purge_config(args),
         ),
         signal_config=TopKSignalConfig(top_k=candidate.top_k),
