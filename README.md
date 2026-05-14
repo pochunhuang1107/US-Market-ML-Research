@@ -55,6 +55,8 @@ This bootstrap includes only the project foundation:
   switch logs, and tracking-window metrics for one selected local candidate.
 - A model signal artifact export that writes point-in-time runtime-compatible
   signal files for the downstream simulation platform.
+- A local daily model signal export, healthcheck CLI, and operator runbook for
+  validating runtime-safe signal artifacts before platform ingestion.
 
 ## Not Included Yet
 
@@ -780,7 +782,7 @@ python -m pip install -e ".[dev,nn]"
 
 us-market-ml-daily-signal-export \
   --data-path data/curated/etf_daily_ohlcv.parquet \
-  --output-dir artifacts/model_signals \
+  --output-dir artifacts/model_signals_daily \
   --candidate baseline:linear_smooth10_margin002:linear_regression:1:42:10:0.002 \
   --model-version linear_smooth10_margin002_v1 \
   --feature-set-version default_features_v1 \
@@ -791,4 +793,30 @@ us-market-ml-daily-signal-export \
   --label-horizon-days 20 \
   --format parquet \
   --merge-existing
+```
 
+The command writes:
+
+```text
+artifacts/model_signals_daily/model_version=<VERSION>/signals.parquet
+artifacts/model_signals_daily/model_version=<VERSION>/model_signal_manifest.json
+```
+
+Run the local healthcheck before passing the artifact to the simulation
+platform:
+
+```bash
+us-market-ml-daily-signal-healthcheck \
+  --artifact-path artifacts/model_signals_daily/model_version=linear_smooth10_margin002_v1/signals.parquet \
+  --manifest-path artifacts/model_signals_daily/model_version=linear_smooth10_margin002_v1/model_signal_manifest.json \
+  --model-version linear_smooth10_margin002_v1 \
+  --min-symbol-count 2 \
+  --output-path artifacts/model_signals_daily/model_version=linear_smooth10_margin002_v1/healthcheck.csv \
+  --warnings-output-path artifacts/model_signals_daily/model_version=linear_smooth10_margin002_v1/healthcheck_warnings.txt
+```
+
+The healthcheck validates required runtime columns, model version consistency,
+numeric scores, duplicate date/symbol/model rows, forbidden lookahead columns,
+and manifest consistency. It returns `0` for `ready` or `warning`, and `1` for
+`failed`. The daily operator checklist lives in
+[`docs/DAILY_MODEL_SIGNAL_RUNBOOK.md`](docs/DAILY_MODEL_SIGNAL_RUNBOOK.md).
