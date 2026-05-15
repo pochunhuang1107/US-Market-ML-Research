@@ -491,6 +491,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--transaction-cost-bps", default=0.0, type=float)
     parser.add_argument("--min-holding-days", default=1, type=int)
     parser.add_argument("--switch-margin", default=0.0, type=float)
+    parser.add_argument("--allocation-mode", default="equal_weight")
+    parser.add_argument("--score-temperature", default=1.0, type=float)
+    parser.add_argument("--max-weight", default=1.0, type=float)
     args = parser.parse_args(argv)
 
     candidate_names = [candidate.name for candidate in args.candidate]
@@ -513,6 +516,13 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--min-holding-days must be greater than or equal to 1.")
     if args.switch_margin < 0.0:
         parser.error("--switch-margin must be greater than or equal to 0.")
+    if args.allocation_mode not in _supported_allocation_modes():
+        supported = ", ".join(sorted(_supported_allocation_modes()))
+        parser.error(f"--allocation-mode must be one of: {supported}.")
+    if args.score_temperature <= 0.0:
+        parser.error("--score-temperature must be greater than 0.")
+    if not 0.0 < args.max_weight <= 1.0:
+        parser.error("--max-weight must satisfy 0 < max_weight <= 1.")
     args.feature_set_version = args.feature_set_version.strip()
     try:
         validate_feature_set_version(args.feature_set_version)
@@ -553,6 +563,7 @@ def _build_mlp_experiment_config(
         or candidate.dropout is None
     ):
         raise ValueError("MLP candidates require hidden_units, learning_rate, and dropout.")
+    allocation_mode, score_temperature, max_weight = _allocation_values(args)
     return MLPE2EExperimentConfig(
         mlp_config=MLPExperimentConfig(
             target_col=args.target_col,
@@ -574,7 +585,12 @@ def _build_mlp_experiment_config(
             or DEFAULT_FEATURE_SET_VERSION,
             purge_config=_build_purge_config(args),
         ),
-        signal_config=TopKSignalConfig(top_k=candidate.top_k),
+        signal_config=TopKSignalConfig(
+            top_k=candidate.top_k,
+            allocation_mode=allocation_mode,
+            score_temperature=score_temperature,
+            max_weight=max_weight,
+        ),
         backtest_config=SignalBacktestConfig(
             initial_equity=1.0,
             transaction_cost_bps=args.transaction_cost_bps,
@@ -598,6 +614,7 @@ def _build_baseline_experiment_config(
 ) -> BaselineE2EExperimentConfig:
     if candidate.model_type is None:
         raise ValueError("Baseline candidates require model_type.")
+    allocation_mode, score_temperature, max_weight = _allocation_values(args)
     return BaselineE2EExperimentConfig(
         baseline_config=BaselineExperimentConfig(
             target_col=args.target_col,
@@ -613,7 +630,12 @@ def _build_baseline_experiment_config(
             or DEFAULT_FEATURE_SET_VERSION,
             purge_config=_build_purge_config(args),
         ),
-        signal_config=TopKSignalConfig(top_k=candidate.top_k),
+        signal_config=TopKSignalConfig(
+            top_k=candidate.top_k,
+            allocation_mode=allocation_mode,
+            score_temperature=score_temperature,
+            max_weight=max_weight,
+        ),
         backtest_config=SignalBacktestConfig(
             initial_equity=1.0,
             transaction_cost_bps=args.transaction_cost_bps,
@@ -656,6 +678,24 @@ def _build_purge_config(args: argparse.Namespace) -> PurgeConfig | None:
     if args.label_horizon_days <= 0:
         return None
     return PurgeConfig(label_horizon_days=args.label_horizon_days)
+
+
+def _allocation_values(args: argparse.Namespace) -> tuple[str, float, float]:
+    return (
+        getattr(args, "allocation_mode", "equal_weight"),
+        getattr(args, "score_temperature", 1.0),
+        getattr(args, "max_weight", 1.0),
+    )
+
+
+def _supported_allocation_modes() -> set[str]:
+    return {
+        "equal_weight",
+        "score_weighted",
+        "softmax_score_weighted",
+        "volatility_adjusted_score_weighted",
+        "capped_score_weighted",
+    }
 
 
 def _candidate_curve_to_long(

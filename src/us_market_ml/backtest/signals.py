@@ -6,7 +6,7 @@ it does not calculate returns, transaction costs, positions, or equity curves.
 
 Rows are preserved so signal frames stay aligned with experiment prediction
 outputs. The generated signals select the top-K eligible symbols per date by
-descending prediction score and assign equal target weights to selected rows.
+descending prediction score and assign target weights to selected rows.
 """
 
 from __future__ import annotations
@@ -16,15 +16,25 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+ALLOCATION_MODES = {
+    "equal_weight",
+    "score_weighted",
+    "softmax_score_weighted",
+    "volatility_adjusted_score_weighted",
+    "capped_score_weighted",
+}
+_ALLOCATION_EPSILON = 1e-12
+
 
 @dataclass(frozen=True)
 class TopKSignalConfig:
-    """Configuration for deterministic top-K equal-weight signal generation.
+    """Configuration for deterministic top-K signal generation.
 
     Prediction scores are converted into top-K ETF selections independently
-    for each date. Selected symbols receive equal target portfolio weights for
-    future backtesting. This configuration does not define a trading simulator,
-    return calculation, transaction-cost model, or equity curve.
+    for each date. Selected symbols receive target portfolio weights for future
+    backtesting according to ``allocation_mode``. This configuration does not
+    define a trading simulator, return calculation, transaction-cost model, or
+    equity curve.
     """
 
     prediction_col: str = "prediction"
@@ -36,12 +46,31 @@ class TopKSignalConfig:
     weight_col: str = "target_weight"
     rank_col: str = "signal_rank"
     selected_col: str = "selected"
+    allocation_mode: str = "equal_weight"
+    score_temperature: float = 1.0
+    volatility_col: str = "volatility_20d"
+    max_weight: float = 1.0
 
     def __post_init__(self) -> None:
         """Validate top-K signal configuration."""
 
         if self.top_k <= 0:
             raise ValueError("top_k must be positive.")
+        if self.allocation_mode not in ALLOCATION_MODES:
+            modes = ", ".join(sorted(ALLOCATION_MODES))
+            raise ValueError(f"allocation_mode must be one of: {modes}.")
+        if self.score_temperature <= 0.0:
+            raise ValueError("score_temperature must be greater than 0.")
+        if not 0.0 < self.max_weight <= 1.0:
+            raise ValueError("max_weight must satisfy 0 < max_weight <= 1.")
+        if (
+            self.allocation_mode == "capped_score_weighted"
+            and self.top_k * self.max_weight < 1.0
+        ):
+            raise ValueError(
+                "top_k * max_weight must be greater than or equal to 1 for "
+                "capped_score_weighted allocation."
+            )
 
 
 @dataclass(frozen=True)
@@ -87,7 +116,8 @@ def generate_top_k_signals(
 
     Higher prediction scores are better. Ties are resolved deterministically by
     sorting symbols ascending after prediction descending. Missing prediction
-    rows are preserved but remain unselected.
+    rows are preserved but remain unselected. The default allocation mode is
+    equal weight, preserving the original top-K behavior.
     """
 
     resolved_config = config if config is not None else TopKSignalConfig()
@@ -127,14 +157,22 @@ def generate_top_k_signals(
         if not selected_positions:
             continue
 
-        target_weight = 1.0 / len(selected_positions)
+        selected_rows = ranked_group.iloc[: len(selected_positions)]
+        target_weights = _calculate_target_weights(selected_rows, resolved_config)
         out.iloc[selected_positions, selected_column_position] = True
-        out.iloc[selected_positions, weight_column_position] = target_weight
-        for rank, position in enumerate(selected_positions, start=1):
+        for rank, (position, target_weight) in enumerate(
+            zip(selected_positions, target_weights, strict=True),
+            start=1,
+        ):
             out.iloc[position, rank_column_position] = rank
+            out.iloc[position, weight_column_position] = target_weight
 
     if smoothing_config is not None:
-        return smooth_top_k_signals(out, smoothing_config)
+        return smooth_top_k_signals(
+            out,
+            smoothing_config,
+            allocation_config=resolved_config,
+        )
 
     return out
 
@@ -142,17 +180,19 @@ def generate_top_k_signals(
 def smooth_top_k_signals(
     signals: pd.DataFrame,
     config: SignalSmoothingConfig | None = None,
+    allocation_config: TopKSignalConfig | None = None,
 ) -> pd.DataFrame:
     """Return smoothed top-K signals with minimum holding-period support.
 
     The input is expected to be the output of ``generate_top_k_signals``. All
     original columns and rows are preserved, while selected/rank/target-weight
-    columns are recalculated date by date. For top-1 signals, the currently
-    selected symbol is held until ``min_holding_days`` strategy dates have
-    elapsed, then replaced only when the best available candidate improves on
-    the current holding's prediction by at least ``switch_margin``. If the
-    current holding is absent or has a missing prediction on a date, the best
-    available symbol may replace it immediately.
+    columns are recalculated date by date. Allocation defaults to equal weight
+    unless a compatible ``TopKSignalConfig`` is supplied. For top-1 signals,
+    the currently selected symbol is held until ``min_holding_days`` strategy
+    dates have elapsed, then replaced only when the best available candidate
+    improves on the current holding's prediction by at least ``switch_margin``.
+    If the current holding is absent or has a missing prediction on a date, the
+    best available symbol may replace it immediately.
 
     For top-K where K > 1, v1 smoothing keeps still-available selected symbols
     that have not met the minimum holding period, then fills open slots by
@@ -162,6 +202,18 @@ def smooth_top_k_signals(
     """
 
     resolved_config = config if config is not None else SignalSmoothingConfig()
+    resolved_allocation_config = (
+        allocation_config
+        if allocation_config is not None
+        else TopKSignalConfig(
+            prediction_col=resolved_config.prediction_col,
+            date_col=resolved_config.date_col,
+            symbol_col=resolved_config.symbol_col,
+            weight_col=resolved_config.target_weight_col,
+            rank_col=resolved_config.signal_rank_col,
+            selected_col=resolved_config.selected_col,
+        )
+    )
     _validate_required_columns(
         signals,
         [
@@ -197,9 +249,20 @@ def smooth_top_k_signals(
     )
     top_k = max(original_selected_counts.values(), default=0)
     if top_k <= 1:
-        return _smooth_top_1_signals(out, original_selected_counts, resolved_config)
+        return _smooth_top_1_signals(
+            out,
+            original_selected_counts,
+            resolved_config,
+            resolved_allocation_config,
+        )
 
-    return _smooth_top_k_signals(out, original_selected_counts, top_k, resolved_config)
+    return _smooth_top_k_signals(
+        out,
+        original_selected_counts,
+        top_k,
+        resolved_config,
+        resolved_allocation_config,
+    )
 
 
 def summarize_signals(
@@ -287,6 +350,7 @@ def _smooth_top_1_signals(
     out: pd.DataFrame,
     original_selected_counts: dict[object, int],
     config: SignalSmoothingConfig,
+    allocation_config: TopKSignalConfig,
 ) -> pd.DataFrame:
     current_symbol: object | None = None
     current_holding_days = 0
@@ -329,7 +393,13 @@ def _smooth_top_1_signals(
                 selected_symbol = current_symbol
                 switched = False
 
-        _assign_selected_symbols(out, date_group, [selected_symbol], config)
+        _assign_selected_symbols(
+            out,
+            date_group,
+            [selected_symbol],
+            config,
+            allocation_config,
+        )
         current_symbol = selected_symbol
         current_holding_days = 1 if switched else current_holding_days + 1
 
@@ -341,6 +411,7 @@ def _smooth_top_k_signals(
     original_selected_counts: dict[object, int],
     top_k: int,
     config: SignalSmoothingConfig,
+    allocation_config: TopKSignalConfig,
 ) -> pd.DataFrame:
     holding_days: dict[object, int] = {}
 
@@ -381,7 +452,13 @@ def _smooth_top_k_signals(
                 break
             selected_symbols.append(selected_symbol)
 
-        _assign_selected_symbols(out, date_group, selected_symbols, config)
+        _assign_selected_symbols(
+            out,
+            date_group,
+            selected_symbols,
+            config,
+            allocation_config,
+        )
         holding_days = {
             symbol: holding_days.get(symbol, 0) + 1 for symbol in selected_symbols
         }
@@ -465,6 +542,7 @@ def _assign_selected_symbols(
     date_group: pd.DataFrame,
     selected_symbols: list[object],
     config: SignalSmoothingConfig,
+    allocation_config: TopKSignalConfig,
 ) -> None:
     if not selected_symbols:
         return
@@ -476,15 +554,157 @@ def _assign_selected_symbols(
         kind="mergesort",
     )
     selected_positions = selected_rows["__signal_smoothing_position"].to_list()
-    target_weight = 1.0 / len(selected_positions)
+    target_weights = _calculate_target_weights(selected_rows, allocation_config)
 
     selected_column_position = out.columns.get_loc(config.selected_col)
     rank_column_position = out.columns.get_loc(config.signal_rank_col)
     weight_column_position = out.columns.get_loc(config.target_weight_col)
-    for rank, position in enumerate(selected_positions, start=1):
+    for rank, (position, target_weight) in enumerate(
+        zip(selected_positions, target_weights, strict=True),
+        start=1,
+    ):
         out.iloc[position, selected_column_position] = True
         out.iloc[position, rank_column_position] = rank
         out.iloc[position, weight_column_position] = target_weight
+
+
+def _calculate_target_weights(
+    selected_rows: pd.DataFrame,
+    config: TopKSignalConfig,
+) -> np.ndarray:
+    selected_count = len(selected_rows)
+    if selected_count == 0:
+        return np.array([], dtype=float)
+    if config.allocation_mode == "equal_weight":
+        return _equal_weights(selected_count)
+    if config.allocation_mode == "score_weighted":
+        return _score_weighted_weights(selected_rows, config)
+    if config.allocation_mode == "softmax_score_weighted":
+        return _softmax_score_weights(selected_rows, config)
+    if config.allocation_mode == "volatility_adjusted_score_weighted":
+        return _volatility_adjusted_score_weights(selected_rows, config)
+    if config.allocation_mode == "capped_score_weighted":
+        return _capped_score_weights(selected_rows, config)
+    raise ValueError(f"Unsupported allocation_mode: {config.allocation_mode!r}")
+
+
+def _equal_weights(selected_count: int) -> np.ndarray:
+    return np.full(selected_count, 1.0 / selected_count, dtype=float)
+
+
+def _score_weighted_weights(
+    selected_rows: pd.DataFrame,
+    config: TopKSignalConfig,
+) -> np.ndarray:
+    scores = _score_values(selected_rows, config)
+    shifted_scores = _positive_shifted_scores(scores)
+    total = float(shifted_scores.sum())
+    if not np.isfinite(total) or total <= _ALLOCATION_EPSILON:
+        return _equal_weights(len(selected_rows))
+    return shifted_scores / total
+
+
+def _softmax_score_weights(
+    selected_rows: pd.DataFrame,
+    config: TopKSignalConfig,
+) -> np.ndarray:
+    scores = _score_values(selected_rows, config) / config.score_temperature
+    stabilized_scores = scores - np.nanmax(scores)
+    exp_scores = np.exp(stabilized_scores)
+    total = float(exp_scores.sum())
+    if not np.isfinite(total) or total <= _ALLOCATION_EPSILON:
+        return _equal_weights(len(selected_rows))
+    return exp_scores / total
+
+
+def _volatility_adjusted_score_weights(
+    selected_rows: pd.DataFrame,
+    config: TopKSignalConfig,
+) -> np.ndarray:
+    if config.volatility_col not in selected_rows.columns:
+        return _score_weighted_weights(selected_rows, config)
+
+    volatility = pd.to_numeric(selected_rows[config.volatility_col], errors="coerce").to_numpy(
+        dtype=float
+    )
+    valid_volatility = np.isfinite(volatility) & (volatility > _ALLOCATION_EPSILON)
+    if not bool(valid_volatility.all()):
+        return _score_weighted_weights(selected_rows, config)
+
+    shifted_scores = _positive_shifted_scores(_score_values(selected_rows, config))
+    adjusted_scores = shifted_scores / np.maximum(volatility, _ALLOCATION_EPSILON)
+    total = float(adjusted_scores.sum())
+    if not np.isfinite(total) or total <= _ALLOCATION_EPSILON:
+        return _score_weighted_weights(selected_rows, config)
+    return adjusted_scores / total
+
+
+def _capped_score_weights(
+    selected_rows: pd.DataFrame,
+    config: TopKSignalConfig,
+) -> np.ndarray:
+    base_weights = _score_weighted_weights(selected_rows, config)
+    if len(base_weights) * config.max_weight < 1.0:
+        total = float(base_weights.sum())
+        if total > _ALLOCATION_EPSILON:
+            return base_weights / total
+        return _equal_weights(len(base_weights))
+    return _cap_and_redistribute(base_weights, config.max_weight)
+
+
+def _score_values(
+    selected_rows: pd.DataFrame,
+    config: TopKSignalConfig,
+) -> np.ndarray:
+    return pd.to_numeric(selected_rows[config.prediction_col], errors="coerce").to_numpy(
+        dtype=float
+    )
+
+
+def _positive_shifted_scores(scores: np.ndarray) -> np.ndarray:
+    if scores.size == 0 or not bool(np.isfinite(scores).all()):
+        return np.zeros_like(scores, dtype=float)
+    min_score = float(scores.min())
+    if min_score <= 0.0:
+        return scores - min_score + _ALLOCATION_EPSILON
+    return scores.copy()
+
+
+def _cap_and_redistribute(weights: np.ndarray, max_weight: float) -> np.ndarray:
+    capped = np.minimum(weights.astype(float), max_weight)
+    excess = max(0.0, float(weights.sum() - capped.sum()))
+
+    for _ in range(len(capped) + 1):
+        if excess <= _ALLOCATION_EPSILON:
+            break
+
+        capacity = np.maximum(max_weight - capped, 0.0)
+        eligible = capacity > _ALLOCATION_EPSILON
+        if not bool(eligible.any()):
+            break
+
+        preferred = weights[eligible]
+        preferred_total = float(preferred.sum())
+        if preferred_total <= _ALLOCATION_EPSILON:
+            preferred = capacity[eligible]
+            preferred_total = float(preferred.sum())
+        if preferred_total <= _ALLOCATION_EPSILON:
+            break
+
+        additions = excess * preferred / preferred_total
+        applied = np.minimum(additions, capacity[eligible])
+        capped[eligible] += applied
+        new_excess = excess - float(applied.sum())
+        if abs(new_excess - excess) <= _ALLOCATION_EPSILON:
+            break
+        excess = max(0.0, new_excess)
+
+    total = float(capped.sum())
+    if total <= _ALLOCATION_EPSILON:
+        return _equal_weights(len(capped))
+    if abs(total - 1.0) > _ALLOCATION_EPSILON:
+        capped = capped / total
+    return capped
 
 
 def _validate_required_columns(df: pd.DataFrame, required_columns: list[str]) -> None:

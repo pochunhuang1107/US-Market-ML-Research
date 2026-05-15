@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,7 @@ import pandas as pd
 import pytest
 
 from us_market_ml.cli.run_sweep import (
+    parse_allocation_modes,
     parse_feature_set_versions,
     parse_float_list,
     parse_fold,
@@ -182,6 +184,100 @@ def test_run_sweep_from_args_accepts_smoothing_grid(
     ]
 
 
+def test_run_sweep_from_args_accepts_allocation_grid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_signal_configs: list[tuple[str, float, float]] = []
+
+    def fake_run_sweep(config: Any) -> pd.DataFrame:
+        observed_signal_configs.extend(
+            (signal.allocation_mode, signal.score_temperature, signal.max_weight)
+            for signal in config.signals
+        )
+        return pd.DataFrame()
+
+    monkeypatch.setattr("us_market_ml.cli.run_sweep.run_sweep", fake_run_sweep)
+
+    return_code = run_sweep_from_args(
+        [
+            "--run-name",
+            "cli_allocations",
+            "--output-dir",
+            str(tmp_path / "sweeps"),
+            "--universe",
+            "core:data/curated/etf_daily_ohlcv.parquet",
+            "--fold",
+            "fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30",
+            "--model-family",
+            "baseline",
+            "--baseline-models",
+            "ridge",
+            "--top-k",
+            "3",
+            "--allocation-modes",
+            "equal_weight,score_weighted",
+            "--score-temperatures",
+            "1.0",
+            "--max-weights",
+            "0.5",
+        ]
+    )
+
+    assert return_code == 0
+    assert observed_signal_configs == [
+        ("equal_weight", 1.0, 0.5),
+        ("score_weighted", 1.0, 0.5),
+    ]
+
+
+def test_run_sweep_from_args_skips_invalid_capped_allocation_grid_points(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_signal_configs: list[tuple[int, str, float]] = []
+
+    def fake_run_sweep(config: Any) -> pd.DataFrame:
+        observed_signal_configs.extend(
+            (signal.top_k, signal.allocation_mode, signal.max_weight)
+            for signal in config.signals
+        )
+        return pd.DataFrame()
+
+    monkeypatch.setattr("us_market_ml.cli.run_sweep.run_sweep", fake_run_sweep)
+
+    return_code = run_sweep_from_args(
+        [
+            "--run-name",
+            "cli_capped_allocations",
+            "--output-dir",
+            str(tmp_path / "sweeps"),
+            "--universe",
+            "core:data/curated/etf_daily_ohlcv.parquet",
+            "--fold",
+            "fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30",
+            "--model-family",
+            "baseline",
+            "--baseline-models",
+            "ridge",
+            "--top-k",
+            "1,3",
+            "--allocation-modes",
+            "capped_score_weighted",
+            "--max-weights",
+            "0.5,1.0",
+        ]
+    )
+
+    assert return_code == 0
+    assert observed_signal_configs == [
+        (1, "capped_score_weighted", 1.0),
+        (3, "capped_score_weighted", 0.5),
+        (3, "capped_score_weighted", 1.0),
+    ]
+    assert (1, "capped_score_weighted", 0.5) not in observed_signal_configs
+
+
 def test_run_sweep_from_args_accepts_transaction_cost_grid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -258,6 +354,16 @@ def test_run_sweep_from_args_accepts_feature_set_version_grid(
 
 def test_parse_feature_set_versions_validates_supported_versions() -> None:
     assert parse_feature_set_versions("default_features_v1") == ["default_features_v1"]
+
+
+def test_parse_allocation_modes_validates_supported_modes() -> None:
+    assert parse_allocation_modes("equal_weight,softmax_score_weighted") == [
+        "equal_weight",
+        "softmax_score_weighted",
+    ]
+
+    with pytest.raises(argparse.ArgumentTypeError, match="Unsupported allocation"):
+        parse_allocation_modes("not_a_mode")
     with pytest.raises(Exception, match="Unsupported feature_set_version"):
         parse_feature_set_versions("unknown_features")
 
