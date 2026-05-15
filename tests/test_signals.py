@@ -60,6 +60,153 @@ def test_equal_weights_sum_to_one_for_dates_with_selected_symbols() -> None:
     assert validate_signal_weights(signals)
 
 
+def test_score_weighted_weights_sum_to_one_by_date() -> None:
+    signals = generate_top_k_signals(
+        _prediction_frame(),
+        TopKSignalConfig(top_k=3, allocation_mode="score_weighted"),
+    )
+
+    selected_weight_by_date = (
+        signals.loc[signals["selected"]].groupby("date")["target_weight"].sum()
+    )
+
+    assert selected_weight_by_date.tolist() == pytest.approx([1.0, 1.0])
+    assert validate_signal_weights(
+        signals,
+        TopKSignalConfig(top_k=3, allocation_mode="score_weighted"),
+    )
+
+
+def test_score_weighted_handles_negative_scores() -> None:
+    predictions = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "SPY", "prediction": -0.30},
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "QQQ", "prediction": -0.10},
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "TLT", "prediction": 0.20},
+        ]
+    )
+
+    signals = generate_top_k_signals(
+        predictions,
+        TopKSignalConfig(top_k=3, allocation_mode="score_weighted"),
+    )
+    selected = signals.loc[signals["selected"]].sort_values("signal_rank")
+
+    assert selected["target_weight"].sum() == pytest.approx(1.0)
+    assert selected["target_weight"].tolist() == pytest.approx(
+        [5 / 7, 2 / 7, 0.0],
+        abs=1e-9,
+    )
+
+
+def test_softmax_score_weighted_weights_sum_to_one() -> None:
+    signals = generate_top_k_signals(
+        _prediction_frame(),
+        TopKSignalConfig(
+            top_k=3,
+            allocation_mode="softmax_score_weighted",
+            score_temperature=0.5,
+        ),
+    )
+
+    selected_weight_by_date = (
+        signals.loc[signals["selected"]].groupby("date")["target_weight"].sum()
+    )
+
+    assert selected_weight_by_date.tolist() == pytest.approx([1.0, 1.0])
+    assert validate_signal_weights(signals)
+
+
+def test_softmax_score_weighted_validates_score_temperature() -> None:
+    with pytest.raises(ValueError, match="score_temperature"):
+        TopKSignalConfig(
+            top_k=2,
+            allocation_mode="softmax_score_weighted",
+            score_temperature=0.0,
+        )
+
+
+def test_capped_score_weighted_enforces_max_weight() -> None:
+    predictions = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "SPY", "prediction": 0.90},
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "QQQ", "prediction": 0.08},
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "TLT", "prediction": 0.02},
+        ]
+    )
+
+    signals = generate_top_k_signals(
+        predictions,
+        TopKSignalConfig(
+            top_k=3,
+            allocation_mode="capped_score_weighted",
+            max_weight=0.6,
+        ),
+    )
+    selected_weights = signals.loc[signals["selected"], "target_weight"]
+
+    assert selected_weights.max() <= 0.6 + 1e-12
+    assert selected_weights.sum() == pytest.approx(1.0)
+
+
+def test_capped_score_weighted_raises_when_cap_cannot_fully_allocate() -> None:
+    with pytest.raises(ValueError, match="top_k \\* max_weight"):
+        TopKSignalConfig(
+            top_k=2,
+            allocation_mode="capped_score_weighted",
+            max_weight=0.4,
+        )
+
+
+def test_volatility_adjusted_score_weighted_uses_volatility_20d() -> None:
+    predictions = pd.DataFrame(
+        [
+            {
+                "date": pd.Timestamp("2021-01-01"),
+                "symbol": "SPY",
+                "prediction": 0.50,
+                "volatility_20d": 0.50,
+            },
+            {
+                "date": pd.Timestamp("2021-01-01"),
+                "symbol": "QQQ",
+                "prediction": 0.50,
+                "volatility_20d": 0.10,
+            },
+        ]
+    )
+
+    signals = generate_top_k_signals(
+        predictions,
+        TopKSignalConfig(top_k=2, allocation_mode="volatility_adjusted_score_weighted"),
+    )
+    selected = signals.loc[signals["selected"]].sort_values("symbol")
+
+    assert selected.loc[selected["symbol"] == "QQQ", "target_weight"].iloc[0] > selected.loc[
+        selected["symbol"] == "SPY", "target_weight"
+    ].iloc[0]
+    assert selected["target_weight"].sum() == pytest.approx(1.0)
+
+
+def test_volatility_adjusted_score_weighted_falls_back_when_volatility_missing() -> None:
+    predictions = _prediction_frame()
+
+    volatility_adjusted = generate_top_k_signals(
+        predictions,
+        TopKSignalConfig(top_k=3, allocation_mode="volatility_adjusted_score_weighted"),
+    )
+    score_weighted = generate_top_k_signals(
+        predictions,
+        TopKSignalConfig(top_k=3, allocation_mode="score_weighted"),
+    )
+
+    pd.testing.assert_series_equal(
+        volatility_adjusted["target_weight"],
+        score_weighted["target_weight"],
+        check_names=False,
+    )
+
+
 def test_dates_with_fewer_eligible_symbols_than_top_k_select_all_eligible() -> None:
     predictions = pd.DataFrame(
         [
@@ -283,6 +430,34 @@ def test_top_k_smoothing_preserves_selected_count_and_total_weight() -> None:
     assert summary["selected_count"].tolist() == [2, 2, 2]
     assert summary["total_weight"].tolist() == [1.0, 1.0, 1.0]
     assert validate_signal_weights(smoothed, TopKSignalConfig(top_k=2))
+
+
+def test_smoothing_with_score_weighted_allocation_keeps_weights_sum_to_one() -> None:
+    predictions = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "SPY", "prediction": 0.90},
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "QQQ", "prediction": 0.30},
+            {"date": pd.Timestamp("2021-01-01"), "symbol": "TLT", "prediction": 0.10},
+            {"date": pd.Timestamp("2021-01-02"), "symbol": "SPY", "prediction": 0.10},
+            {"date": pd.Timestamp("2021-01-02"), "symbol": "QQQ", "prediction": 0.90},
+            {"date": pd.Timestamp("2021-01-02"), "symbol": "TLT", "prediction": 0.80},
+        ]
+    )
+    signal_config = TopKSignalConfig(top_k=2, allocation_mode="score_weighted")
+    signals = generate_top_k_signals(predictions, signal_config)
+
+    smoothed = smooth_top_k_signals(
+        signals,
+        SignalSmoothingConfig(min_holding_days=2),
+        allocation_config=signal_config,
+    )
+    selected_day_2 = smoothed.loc[
+        (smoothed["date"] == pd.Timestamp("2021-01-02")) & smoothed["selected"]
+    ].sort_values("signal_rank")
+
+    assert selected_day_2["target_weight"].sum() == pytest.approx(1.0)
+    assert selected_day_2["target_weight"].tolist() == pytest.approx([0.9, 0.1])
+    assert validate_signal_weights(smoothed, signal_config)
 
 
 def _selected_symbols_by_date(signals: pd.DataFrame) -> dict[pd.Timestamp, list[str]]:

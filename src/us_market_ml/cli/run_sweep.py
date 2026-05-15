@@ -28,18 +28,7 @@ def run_sweep_from_args(argv: list[str] | None = None) -> int:
         universes=args.universe,
         folds=args.fold,
         models=models,
-        signals=[
-            SweepSignalConfig(
-                top_k=top_k,
-                min_holding_days=min_holding_days,
-                switch_margin=switch_margin,
-            )
-            for top_k, min_holding_days, switch_margin in product(
-                args.top_k,
-                args.min_holding_days,
-                args.switch_margins,
-            )
-        ],
+        signals=_build_signal_configs(args),
         target_col=args.target_col,
         label_horizon_days=args.label_horizon_days,
         feature_set_versions=args.feature_set_versions,
@@ -154,6 +143,26 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         type=parse_float_list,
         default=parse_float_list("0"),
     )
+    parser.add_argument(
+        "--allocation-modes",
+        type=parse_allocation_modes,
+        default=parse_allocation_modes("equal_weight"),
+        help=(
+            "Comma-separated allocation mode grid. Supported values: equal_weight, "
+            "score_weighted, softmax_score_weighted, "
+            "volatility_adjusted_score_weighted, capped_score_weighted."
+        ),
+    )
+    parser.add_argument(
+        "--score-temperatures",
+        type=parse_float_list,
+        default=parse_float_list("1.0"),
+    )
+    parser.add_argument(
+        "--max-weights",
+        type=parse_float_list,
+        default=parse_float_list("1.0"),
+    )
     parser.add_argument("--hidden-units", action="append", type=parse_hidden_units)
     parser.add_argument(
         "--learning-rates",
@@ -205,6 +214,13 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--min-holding-days values must be greater than or equal to 1.")
     if any(switch_margin < 0.0 for switch_margin in args.switch_margins):
         parser.error("--switch-margins values must be greater than or equal to 0.")
+    if any(score_temperature <= 0.0 for score_temperature in args.score_temperatures):
+        parser.error("--score-temperatures values must be greater than 0.")
+    if any(
+        max_weight <= 0.0 or max_weight > 1.0
+        for max_weight in args.max_weights
+    ):
+        parser.error("--max-weights values must satisfy 0 < max_weight <= 1.")
     if any(transaction_cost_bps < 0.0 for transaction_cost_bps in args.transaction_cost_bps):
         parser.error("--transaction-cost-bps values must be greater than or equal to 0.")
 
@@ -248,6 +264,51 @@ def _build_model_configs(args: argparse.Namespace) -> list[SweepModelConfig]:
     return models
 
 
+def _build_signal_configs(args: argparse.Namespace) -> list[SweepSignalConfig]:
+    signals: list[SweepSignalConfig] = []
+    for (
+        top_k,
+        min_holding_days,
+        switch_margin,
+        allocation_mode,
+        score_temperature,
+        max_weight,
+    ) in product(
+        args.top_k,
+        args.min_holding_days,
+        args.switch_margins,
+        args.allocation_modes,
+        args.score_temperatures,
+        args.max_weights,
+    ):
+        if _is_invalid_capped_allocation_grid_point(
+            top_k=top_k,
+            allocation_mode=allocation_mode,
+            max_weight=max_weight,
+        ):
+            continue
+        signals.append(
+            SweepSignalConfig(
+                top_k=top_k,
+                min_holding_days=min_holding_days,
+                switch_margin=switch_margin,
+                allocation_mode=allocation_mode,
+                score_temperature=score_temperature,
+                max_weight=max_weight,
+            )
+        )
+    return signals
+
+
+def _is_invalid_capped_allocation_grid_point(
+    *,
+    top_k: int,
+    allocation_mode: str,
+    max_weight: float,
+) -> bool:
+    return allocation_mode == "capped_score_weighted" and top_k * max_weight < 1.0
+
+
 def parse_feature_set_versions(value: str) -> list[str]:
     """Parse comma-separated feature set versions."""
 
@@ -258,6 +319,27 @@ def parse_feature_set_versions(value: str) -> list[str]:
         except ValueError as exc:
             raise argparse.ArgumentTypeError(str(exc)) from exc
     return versions
+
+
+def parse_allocation_modes(value: str) -> list[str]:
+    """Parse comma-separated allocation modes."""
+
+    modes = _parse_string_list(value)
+    supported_modes = {
+        "equal_weight",
+        "score_weighted",
+        "softmax_score_weighted",
+        "volatility_adjusted_score_weighted",
+        "capped_score_weighted",
+    }
+    invalid_modes = [mode for mode in modes if mode not in supported_modes]
+    if invalid_modes:
+        supported = ", ".join(sorted(supported_modes))
+        invalid = ", ".join(invalid_modes)
+        raise argparse.ArgumentTypeError(
+            f"Unsupported allocation mode(s): {invalid}. Supported values: {supported}."
+        )
+    return modes
 
 
 def _parse_string_list(value: str) -> list[str]:

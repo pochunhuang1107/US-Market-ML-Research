@@ -251,6 +251,30 @@ logic is portfolio-construction research logic only; it is not an execution
 model and does not change transaction-cost math, fills, slippage, or model
 training.
 
+### Portfolio allocation modes
+
+Portfolio allocation research asks whether model scores can keep a meaningful
+share of the return while reducing concentration, drawdown, and turnover versus
+a concentrated top-1 ETF rotation. These methods are offline
+portfolio-construction experiments only; they are not execution logic, trading
+advice, or live allocation instructions.
+
+`equal_weight` is the default and preserves the previous behavior: selected
+top-K symbols receive equal target weights.
+
+`score_weighted` weights selected symbols in proportion to positive prediction
+scores, shifting negative selected scores before normalization.
+
+`softmax_score_weighted` applies a numerically stabilized softmax to selected
+scores using `score_temperature`.
+
+`volatility_adjusted_score_weighted` weights positive shifted scores by recent
+volatility, using `volatility_20d` when present and falling back safely to
+score-weighted allocation when volatility is unavailable or invalid.
+
+`capped_score_weighted` starts from score-weighted allocation, caps each symbol
+at `max_weight`, and redistributes excess across uncapped selected symbols.
+
 ## Benchmark Report
 
 The benchmark report CLI reruns one selected local MLP E2E configuration,
@@ -735,6 +759,15 @@ Sweep smoothing arguments expand the signal grid across every
 `top_k × min_holding_days × switch_margin` combination. Defaults are
 `--min-holding-days 1` and `--switch-margins 0`, which preserve the original
 unsmoothed top-K behavior.
+
+Sweep allocation arguments add `--allocation-modes`, `--score-temperatures`,
+and `--max-weights` grids. Defaults are `equal_weight`, `1.0`, and `1.0`,
+which preserve the previous equal-weight top-K behavior. In v1, temperature is
+only used by `softmax_score_weighted`, and max weight is only used by
+`capped_score_weighted`, though the values are still recorded in run keys and
+result rows for deterministic comparison. Capped allocation sweep points where
+`top_k × max_weight < 1` are skipped because they cannot produce a fully
+allocated portfolio.
 
 Transaction-cost sweeps use `--transaction-cost-bps`, also as a comma-separated
 grid. The default is `0`, and nonzero values are passed through to the existing

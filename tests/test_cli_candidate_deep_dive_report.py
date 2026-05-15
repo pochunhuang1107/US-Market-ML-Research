@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from us_market_ml.cli.run_candidate_deep_dive_report import (
+    _parse_args,
     run_candidate_deep_dive_report_from_args,
 )
 
@@ -38,6 +39,31 @@ def _synthetic_etf_ohlcv() -> pd.DataFrame:
             )
 
     return pd.DataFrame(rows)
+
+
+def test_candidate_deep_dive_cli_accepts_allocation_args(tmp_path: Path) -> None:
+    args = _parse_args(
+        [
+            "--data-path",
+            str(tmp_path / "etf_daily.csv"),
+            "--output-dir",
+            str(tmp_path / "reports"),
+            "--fold",
+            "fold_1:2020-01-01:2020-09-30:2020-10-01:2020-12-31:2021-01-01:2021-02-28",
+            "--candidate",
+            "baseline:linear_top3:linear_regression:3:42",
+            "--allocation-mode",
+            "score_weighted",
+            "--score-temperature",
+            "0.75",
+            "--max-weight",
+            "0.8",
+        ]
+    )
+
+    assert args.allocation_mode == "score_weighted"
+    assert args.score_temperature == pytest.approx(0.75)
+    assert args.max_weight == pytest.approx(0.8)
 
 
 def test_run_candidate_deep_dive_report_from_args_writes_outputs(

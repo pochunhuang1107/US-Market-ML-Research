@@ -8,6 +8,7 @@ import pytest
 
 from us_market_ml.cli.run_candidate_comparison_report import (
     CandidateConfig,
+    _build_baseline_experiment_config,
     _build_smoothing_config,
     _parse_args,
     parse_candidate_config,
@@ -164,6 +165,33 @@ def test_candidate_specific_smoothing_overrides_global_smoothing() -> None:
     assert fallback_smoothing is not None
     assert fallback_smoothing.min_holding_days == 10
     assert fallback_smoothing.switch_margin == pytest.approx(0.002)
+
+
+def test_candidate_comparison_cli_accepts_allocation_args(tmp_path: Path) -> None:
+    args = _parse_args(
+        [
+            "--data-path",
+            str(tmp_path / "etf_daily.csv"),
+            "--output-dir",
+            str(tmp_path / "reports"),
+            "--fold",
+            "fold_1:2020-01-01:2020-09-30:2020-10-01:2020-12-31:2021-01-01:2021-02-28",
+            "--candidate",
+            "baseline:linear_top3:linear_regression:3:42",
+            "--allocation-mode",
+            "capped_score_weighted",
+            "--score-temperature",
+            "0.5",
+            "--max-weight",
+            "0.5",
+        ]
+    )
+    config = _build_baseline_experiment_config(args.candidate[0], args)
+
+    assert args.allocation_mode == "capped_score_weighted"
+    assert config.signal_config.allocation_mode == "capped_score_weighted"
+    assert config.signal_config.score_temperature == pytest.approx(0.5)
+    assert config.signal_config.max_weight == pytest.approx(0.5)
 
 
 def test_duplicate_candidate_names_fail(tmp_path: Path) -> None:

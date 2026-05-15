@@ -250,7 +250,11 @@ def _generate_and_smooth_signals(
     signals = generate_top_k_signals(predictions, signal_config)
     if smoothing_config is None:
         return signals
-    return smooth_top_k_signals(signals, smoothing_config)
+    return smooth_top_k_signals(
+        signals,
+        smoothing_config,
+        allocation_config=signal_config,
+    )
 
 
 __all__ = [

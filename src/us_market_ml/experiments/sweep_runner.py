@@ -60,6 +60,9 @@ RESULT_COLUMNS = [
     "top_k",
     "min_holding_days",
     "switch_margin",
+    "allocation_mode",
+    "score_temperature",
+    "max_weight",
     "transaction_cost_bps",
     "target_col",
     "label_horizon_days",
@@ -124,10 +127,17 @@ class SweepSignalConfig:
     top_k: int
     min_holding_days: int | None = None
     switch_margin: float | None = None
+    allocation_mode: str = "equal_weight"
+    score_temperature: float = 1.0
+    max_weight: float = 1.0
 
     def __post_init__(self) -> None:
-        if self.top_k <= 0:
-            raise ValueError("top_k must be positive.")
+        TopKSignalConfig(
+            top_k=self.top_k,
+            allocation_mode=self.allocation_mode,
+            score_temperature=self.score_temperature,
+            max_weight=self.max_weight,
+        )
         if self.min_holding_days is not None and self.min_holding_days < 1:
             raise ValueError("min_holding_days must be greater than or equal to 1.")
         if self.switch_margin is not None and self.switch_margin < 0.0:
@@ -207,6 +217,9 @@ def build_sweep_run_key(
             f"topk-{signal.top_k}",
             f"hold-{effective_min_holding_days}d",
             f"margin-{effective_switch_margin:g}",
+            f"alloc-{_slug(signal.allocation_mode)}",
+            f"temp-{signal.score_temperature:g}",
+            f"maxw-{signal.max_weight:g}",
             f"cost-{transaction_cost_bps:g}bps",
             f"horizon-{label_horizon_days}d",
             f"features-{_slug(feature_set_version)}",
@@ -304,6 +317,9 @@ def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:
         "top_k",
         "min_holding_days",
         "switch_margin",
+        "allocation_mode",
+        "score_temperature",
+        "max_weight",
         "transaction_cost_bps",
         "hidden_units",
         "learning_rate",
@@ -331,6 +347,18 @@ def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:
         test_rows["min_holding_days"] = 1
     if "switch_margin" not in test_rows.columns:
         test_rows["switch_margin"] = 0.0
+    if "allocation_mode" not in test_rows.columns:
+        test_rows["allocation_mode"] = "equal_weight"
+    else:
+        test_rows["allocation_mode"] = test_rows["allocation_mode"].fillna("equal_weight")
+    if "score_temperature" not in test_rows.columns:
+        test_rows["score_temperature"] = 1.0
+    else:
+        test_rows["score_temperature"] = test_rows["score_temperature"].fillna(1.0)
+    if "max_weight" not in test_rows.columns:
+        test_rows["max_weight"] = 1.0
+    else:
+        test_rows["max_weight"] = test_rows["max_weight"].fillna(1.0)
     if "transaction_cost_bps" not in test_rows.columns:
         test_rows["transaction_cost_bps"] = 0.0
     else:
@@ -345,6 +373,9 @@ def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:
         "top_k",
         "min_holding_days",
         "switch_margin",
+        "allocation_mode",
+        "score_temperature",
+        "max_weight",
         "transaction_cost_bps",
         "hidden_units",
         "learning_rate",
@@ -433,6 +464,9 @@ def _run_one_configuration(
                     config.min_holding_days,
                 ),
                 "switch_margin": _effective_switch_margin(signal, config.switch_margin),
+                "allocation_mode": signal.allocation_mode,
+                "score_temperature": signal.score_temperature,
+                "max_weight": signal.max_weight,
                 "transaction_cost_bps": transaction_cost_bps,
                 "target_col": summary_row["target_col"],
                 "label_horizon_days": config.label_horizon_days,
@@ -471,6 +505,9 @@ def _run_baseline(
         signal_config=TopKSignalConfig(
             prediction_col=config.prediction_col,
             top_k=signal.top_k,
+            allocation_mode=signal.allocation_mode,
+            score_temperature=signal.score_temperature,
+            max_weight=signal.max_weight,
         ),
         backtest_config=SignalBacktestConfig(
             initial_equity=config.initial_equity,
@@ -515,6 +552,9 @@ def _run_mlp(
         signal_config=TopKSignalConfig(
             prediction_col=config.prediction_col,
             top_k=signal.top_k,
+            allocation_mode=signal.allocation_mode,
+            score_temperature=signal.score_temperature,
+            max_weight=signal.max_weight,
         ),
         backtest_config=SignalBacktestConfig(
             initial_equity=config.initial_equity,

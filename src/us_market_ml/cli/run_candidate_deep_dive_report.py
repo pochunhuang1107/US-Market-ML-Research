@@ -32,6 +32,7 @@ from us_market_ml.cli.run_candidate_comparison_report import (
     _build_candidate_rank_table,
     _candidate_curve_to_long,
     _run_candidate_experiment,
+    _supported_allocation_modes,
     parse_candidate_config,
 )
 from us_market_ml.cli.run_walk_forward_benchmark_report import (
@@ -268,6 +269,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--transaction-cost-bps", default=0.0, type=float)
     parser.add_argument("--min-holding-days", default=1, type=int)
     parser.add_argument("--switch-margin", default=0.0, type=float)
+    parser.add_argument("--allocation-mode", default="equal_weight")
+    parser.add_argument("--score-temperature", default=1.0, type=float)
+    parser.add_argument("--max-weight", default=1.0, type=float)
     args = parser.parse_args(argv)
 
     candidate_names = [candidate.name for candidate in args.candidate]
@@ -290,6 +294,13 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--min-holding-days must be greater than or equal to 1.")
     if args.switch_margin < 0.0:
         parser.error("--switch-margin must be greater than or equal to 0.")
+    if args.allocation_mode not in _supported_allocation_modes():
+        supported = ", ".join(sorted(_supported_allocation_modes()))
+        parser.error(f"--allocation-mode must be one of: {supported}.")
+    if args.score_temperature <= 0.0:
+        parser.error("--score-temperature must be greater than 0.")
+    if not 0.0 < args.max_weight <= 1.0:
+        parser.error("--max-weight must satisfy 0 < max_weight <= 1.")
     args.feature_set_version = args.feature_set_version.strip()
     try:
         validate_feature_set_version(args.feature_set_version)

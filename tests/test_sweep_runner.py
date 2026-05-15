@@ -143,6 +143,18 @@ def test_build_sweep_run_key_is_deterministic_and_changes_with_hyperparameters(
     assert "hold-3d" in smoothed_key
     assert "margin-0.02" in smoothed_key
 
+    allocation_signal = SweepSignalConfig(
+        top_k=2,
+        allocation_mode="softmax_score_weighted",
+        score_temperature=0.5,
+        max_weight=0.75,
+    )
+    allocation_key = build_sweep_run_key(universe, fold, model, allocation_signal)
+    assert allocation_key != unscaled_key
+    assert "alloc-softmax-score-weighted" in allocation_key
+    assert "temp-0.5" in allocation_key
+    assert "maxw-0.75" in allocation_key
+
     cost_key = build_sweep_run_key(universe, fold, model, signal, transaction_cost_bps=10.0)
     assert cost_key != unscaled_key
     assert "cost-10bps" in cost_key
@@ -244,6 +256,35 @@ def test_run_sweep_result_rows_include_smoothing_parameters(tmp_path: Path) -> N
     assert "switch_margin" in results.columns
     assert results["min_holding_days"].tolist() == [3, 3, 3]
     assert results["switch_margin"].tolist() == [0.05, 0.05, 0.05]
+
+
+def test_run_sweep_result_rows_include_allocation_parameters(tmp_path: Path) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = SweepRunConfig(
+        universes=[SweepUniverseConfig(name="core", data_path=data_path)],
+        folds=[_fold()],
+        models=[SweepModelConfig(model_family="baseline", model_type="ridge")],
+        signals=[
+            SweepSignalConfig(
+                top_k=3,
+                allocation_mode="capped_score_weighted",
+                score_temperature=1.0,
+                max_weight=0.5,
+            )
+        ],
+        output_dir=tmp_path / "sweeps",
+        run_name="allocation",
+    )
+
+    results = run_sweep(config)
+
+    assert "allocation_mode" in results.columns
+    assert "score_temperature" in results.columns
+    assert "max_weight" in results.columns
+    assert results["allocation_mode"].tolist() == ["capped_score_weighted"] * 3
+    assert results["score_temperature"].tolist() == [1.0, 1.0, 1.0]
+    assert results["max_weight"].tolist() == [0.5, 0.5, 0.5]
 
 
 def test_run_sweep_result_rows_include_transaction_cost_bps(tmp_path: Path) -> None:
