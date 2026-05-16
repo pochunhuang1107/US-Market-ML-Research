@@ -51,6 +51,8 @@ This bootstrap includes only the project foundation:
   tradable or passive enough for further research.
 - A local cost sensitivity report that reruns selected candidates over a grid
   of turnover-based transaction-cost assumptions.
+- A local allocation study report that ranks completed allocation sweep
+  artifacts and compares candidates against the current top-1 champion.
 - A research-only paper-tracking export that writes daily target holdings,
   switch logs, and tracking-window metrics for one selected local candidate.
 - A model signal artifact export that writes point-in-time runtime-compatible
@@ -777,6 +779,30 @@ Each run writes `{run_name}_results.csv`,
 `{run_name}_completed_keys.txt`, and `{run_name}_failed_keys.txt` under the
 selected output directory. Resume is enabled by default; pass `--no-resume` to
 rerun all requested configurations.
+
+## Allocation Study Report
+
+After the focused allocation sweeps complete, the allocation study report reads
+their existing result CSVs and checkpoint files, validates that no failed keys
+were recorded, aggregates `split == "test"` rows across folds, and compares
+allocation candidates against the current top-1 champion. It does not rerun
+sweeps or redesign the experiment runner.
+
+```bash
+us-market-ml-allocation-study-report \
+  --sweep-dir artifacts/sweeps \
+  --sweep allocation_core_modes_study \
+  --sweep allocation_capped_study \
+  --sweep allocation_softmax_study \
+  --output-dir artifacts/reports/allocation_study_comparison
+```
+
+The command writes `allocation_candidate_metrics.csv`,
+`allocation_top_candidates.csv`, `allocation_champion_comparison.csv`,
+`allocation_champion_family_comparison.csv`, and `allocation_study_report.md`.
+The markdown report includes sweep completion status, champion metrics,
+top-return and balanced rankings, a champion-family allocation comparison,
+drawdown tradeoffs, and a research-stage recommendation.
 
 Purged walk-forward splits are optional but recommended when using
 forward-looking labels. A target such as `excess_return_vs_spy_20d` uses future
