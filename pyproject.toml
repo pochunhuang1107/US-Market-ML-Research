@@ -37,6 +37,7 @@ us-market-ml-paper-tracking-export = "us_market_ml.cli.run_paper_tracking_export
 us-market-ml-model-signal-export = "us_market_ml.cli.run_model_signal_export:run_model_signal_export_from_args"
 us-market-ml-daily-signal-export = "us_market_ml.cli.run_daily_signal_export:run_daily_signal_export_from_args"
 us-market-ml-daily-signal-healthcheck = "us_market_ml.cli.run_daily_signal_healthcheck:run_daily_signal_healthcheck_from_args"
+us-market-ml-allocation-study-report = "us_market_ml.cli.run_allocation_study_report:run_allocation_study_report_from_args"
 
 [project.optional-dependencies]
 dev = [
