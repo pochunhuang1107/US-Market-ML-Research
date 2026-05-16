@@ -34,6 +34,7 @@ us-market-ml-sliding-window-longer-window-shortlist-report = "us_market_ml.cli.r
 us-market-ml-walk-forward-benchmark-report = "us_market_ml.cli.run_walk_forward_benchmark_report:run_walk_forward_benchmark_report_from_args"
 us-market-ml-candidate-comparison-report = "us_market_ml.cli.run_candidate_comparison_report:run_candidate_comparison_report_from_args"
 us-market-ml-candidate-deep-dive-report = "us_market_ml.cli.run_candidate_deep_dive_report:run_candidate_deep_dive_report_from_args"
+us-market-ml-final-candidate-deep-dive-bundles = "us_market_ml.cli.run_final_candidate_deep_dive_bundles:run_final_candidate_deep_dive_bundles_from_args"
 us-market-ml-cost-sensitivity-report = "us_market_ml.cli.run_cost_sensitivity_report:run_cost_sensitivity_report_from_args"
 us-market-ml-model-card = "us_market_ml.cli.run_model_card:run_model_card_from_args"
 us-market-ml-paper-tracking-export = "us_market_ml.cli.run_paper_tracking_export:run_paper_tracking_export_from_args"
