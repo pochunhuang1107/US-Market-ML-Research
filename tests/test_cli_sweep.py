@@ -14,6 +14,7 @@ from us_market_ml.cli.run_sweep import (
     parse_fold,
     parse_hidden_units,
     parse_int_list,
+    parse_max_workers,
     parse_name_path,
     run_sweep_from_args,
 )
@@ -352,6 +353,80 @@ def test_run_sweep_from_args_accepts_feature_set_version_grid(
     assert observed_feature_sets == ["default_features_v1", "technical_features_v2"]
 
 
+def test_run_sweep_from_args_accepts_max_workers_from_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_workers: list[int] = []
+
+    def fake_run_sweep(config: Any) -> pd.DataFrame:
+        observed_workers.append(config.max_workers)
+        return pd.DataFrame()
+
+    monkeypatch.setenv("MAX_WORKERS", "4")
+    monkeypatch.setattr("us_market_ml.cli.run_sweep.run_sweep", fake_run_sweep)
+
+    return_code = run_sweep_from_args(
+        [
+            "--run-name",
+            "cli_workers",
+            "--output-dir",
+            str(tmp_path / "sweeps"),
+            "--universe",
+            "core:data/curated/etf_daily_ohlcv.parquet",
+            "--fold",
+            "fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30",
+            "--model-family",
+            "baseline",
+            "--baseline-models",
+            "ridge",
+            "--top-k",
+            "1",
+        ]
+    )
+
+    assert return_code == 0
+    assert observed_workers == [4]
+
+
+def test_run_sweep_from_args_cli_max_workers_overrides_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_workers: list[int] = []
+
+    def fake_run_sweep(config: Any) -> pd.DataFrame:
+        observed_workers.append(config.max_workers)
+        return pd.DataFrame()
+
+    monkeypatch.setenv("MAX_WORKERS", "4")
+    monkeypatch.setattr("us_market_ml.cli.run_sweep.run_sweep", fake_run_sweep)
+
+    return_code = run_sweep_from_args(
+        [
+            "--run-name",
+            "cli_workers",
+            "--output-dir",
+            str(tmp_path / "sweeps"),
+            "--universe",
+            "core:data/curated/etf_daily_ohlcv.parquet",
+            "--fold",
+            "fold_1:2020-01-01:2020-12-31:2021-01-01:2021-03-31:2021-04-01:2021-06-30",
+            "--model-family",
+            "baseline",
+            "--baseline-models",
+            "ridge",
+            "--top-k",
+            "1",
+            "--max-workers",
+            "2",
+        ]
+    )
+
+    assert return_code == 0
+    assert observed_workers == [2]
+
+
 def test_parse_feature_set_versions_validates_supported_versions() -> None:
     assert parse_feature_set_versions("default_features_v1") == ["default_features_v1"]
 
@@ -429,6 +504,7 @@ def test_cli_parser_helpers() -> None:
     assert parse_int_list("1, 2,3") == [1, 2, 3]
     assert parse_float_list("0.001, 0.01") == [0.001, 0.01]
     assert parse_hidden_units("128, 64") == (128, 64)
+    assert parse_max_workers("3") == 3
 
 
 @pytest.mark.parametrize(
@@ -439,6 +515,7 @@ def test_cli_parser_helpers() -> None:
         (parse_int_list, ""),
         (parse_float_list, "not_float"),
         (parse_hidden_units, "0"),
+        (parse_max_workers, "0"),
     ],
 )
 def test_cli_parser_helpers_reject_invalid_values(parser: object, value: str) -> None:

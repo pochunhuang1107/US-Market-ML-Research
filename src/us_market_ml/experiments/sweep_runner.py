@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -165,6 +167,18 @@ class SweepRunConfig:
     output_dir: Path | str = "artifacts/sweeps"
     run_name: str = "sweep"
     resume: bool = True
+    max_workers: int = 1
+
+
+@dataclass(frozen=True)
+class _SweepTask:
+    universe: SweepUniverseConfig
+    fold_config: SweepFoldConfig
+    model_config: SweepModelConfig
+    signal_config: SweepSignalConfig
+    run_key: str
+    transaction_cost_bps: float
+    feature_set_version: str
 
 
 def build_sweep_run_key(
@@ -255,6 +269,18 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
         if not existing_results.empty:
             results_frames.append(existing_results)
 
+    pending_tasks = _build_pending_tasks(config, completed_keys)
+    if config.max_workers > 1:
+        return _run_sweep_parallel(
+            config=config,
+            tasks=pending_tasks,
+            results_path=results_path,
+            completed_path=completed_path,
+            failed_path=failed_path,
+            completed_keys=completed_keys,
+            results_frames=results_frames,
+        )
+
     for universe in config.universes:
         raw_df = read_local_market_data(universe.data_path)
         for fold_config in config.folds:
@@ -303,6 +329,127 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
         return pd.DataFrame(columns=RESULT_COLUMNS)
 
     return pd.concat(results_frames, ignore_index=True)[RESULT_COLUMNS]
+
+
+def _build_pending_tasks(
+    config: SweepRunConfig,
+    completed_keys: set[str],
+) -> list[_SweepTask]:
+    tasks: list[_SweepTask] = []
+    for universe in config.universes:
+        for fold_config in config.folds:
+            for model_config in config.models:
+                for signal_config in config.signals:
+                    for feature_set_version in config.feature_set_versions:
+                        for transaction_cost_bps in config.transaction_cost_bps_values:
+                            run_key = build_sweep_run_key(
+                                universe=universe,
+                                fold=fold_config,
+                                model=model_config,
+                                signal=signal_config,
+                                label_horizon_days=config.label_horizon_days,
+                                min_holding_days=config.min_holding_days,
+                                switch_margin=config.switch_margin,
+                                transaction_cost_bps=transaction_cost_bps,
+                                feature_set_version=feature_set_version,
+                            )
+                            if config.resume and run_key in completed_keys:
+                                continue
+                            tasks.append(
+                                _SweepTask(
+                                    universe=universe,
+                                    fold_config=fold_config,
+                                    model_config=model_config,
+                                    signal_config=signal_config,
+                                    run_key=run_key,
+                                    transaction_cost_bps=transaction_cost_bps,
+                                    feature_set_version=feature_set_version,
+                                )
+                            )
+    return tasks
+
+
+def _run_sweep_parallel(
+    *,
+    config: SweepRunConfig,
+    tasks: list[_SweepTask],
+    results_path: Path,
+    completed_path: Path,
+    failed_path: Path,
+    completed_keys: set[str],
+    results_frames: list[pd.DataFrame],
+) -> pd.DataFrame:
+    if tasks:
+        executor = ProcessPoolExecutor(
+            max_workers=config.max_workers,
+            mp_context=multiprocessing.get_context("spawn"),
+        )
+        futures: dict[Future[list[dict[str, object]]], _SweepTask] = {}
+        try:
+            futures = {
+                executor.submit(_run_one_task_worker, task, config): task for task in tasks
+            }
+            for future in as_completed(futures):
+                task = futures[future]
+                try:
+                    run_rows = future.result()
+                except Exception as exc:  # noqa: BLE001 - continue remaining sweep runs.
+                    _append_failed_key(failed_path, task.run_key, exc)
+                    continue
+
+                run_results = pd.DataFrame(run_rows, columns=RESULT_COLUMNS)
+                _append_results(results_path, run_results)
+                _append_line(completed_path, task.run_key)
+                completed_keys.add(task.run_key)
+                results_frames.append(run_results)
+        except KeyboardInterrupt:
+            for future in futures:
+                future.cancel()
+            _terminate_executor_processes(executor)
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            executor.shutdown()
+
+    if not results_frames:
+        return pd.DataFrame(columns=RESULT_COLUMNS)
+
+    return pd.concat(results_frames, ignore_index=True)[RESULT_COLUMNS]
+
+
+_WORKER_DATA_CACHE: dict[str, pd.DataFrame] = {}
+
+
+def _run_one_task_worker(
+    task: _SweepTask,
+    config: SweepRunConfig,
+) -> list[dict[str, object]]:
+    data_path = str(task.universe.data_path)
+    raw_df = _WORKER_DATA_CACHE.get(data_path)
+    if raw_df is None:
+        raw_df = read_local_market_data(task.universe.data_path)
+        _WORKER_DATA_CACHE[data_path] = raw_df
+
+    return _run_one_configuration(
+        raw_df=raw_df,
+        universe=task.universe,
+        fold=_to_walk_forward_fold(task.fold_config),
+        model=task.model_config,
+        signal=task.signal_config,
+        config=config,
+        run_key=task.run_key,
+        transaction_cost_bps=task.transaction_cost_bps,
+        feature_set_version=task.feature_set_version,
+    )
+
+
+def _terminate_executor_processes(executor: ProcessPoolExecutor) -> None:
+    processes = getattr(executor, "_processes", None)
+    if not processes:
+        return
+    for process in processes.values():
+        if process.is_alive():
+            process.terminate()
 
 
 def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:
@@ -587,6 +734,8 @@ def _validate_sweep_config(config: SweepRunConfig) -> None:
         raise ValueError("min_holding_days must be greater than or equal to 1.")
     if config.switch_margin < 0.0:
         raise ValueError("switch_margin must be greater than or equal to 0.")
+    if config.max_workers < 1:
+        raise ValueError("max_workers must be greater than or equal to 1.")
     if not config.transaction_cost_bps_values:
         raise ValueError("At least one transaction_cost_bps value is required.")
     if any(value < 0.0 for value in config.transaction_cost_bps_values):
