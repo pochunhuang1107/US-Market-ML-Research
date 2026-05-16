@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Sequence
 from itertools import product
 from pathlib import Path
@@ -36,6 +37,7 @@ def run_sweep_from_args(argv: list[str] | None = None) -> int:
         output_dir=args.output_dir,
         run_name=args.run_name,
         resume=args.resume,
+        max_workers=args.max_workers,
     )
 
     results = run_sweep(config)
@@ -46,6 +48,7 @@ def run_sweep_from_args(argv: list[str] | None = None) -> int:
     print(f"results CSV: {output_dir / f'{config.run_name}_results.csv'}")
     print(f"completed checkpoint: {output_dir / f'{config.run_name}_completed_keys.txt'}")
     print(f"failed checkpoint: {output_dir / f'{config.run_name}_failed_keys.txt'}")
+    print(f"max workers: {config.max_workers}")
     print(f"result rows: {len(results)}")
     print()
     if summary.empty:
@@ -197,6 +200,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=parse_float_list("0"),
     )
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--max-workers",
+        type=parse_max_workers,
+        default=parse_max_workers(os.environ.get("MAX_WORKERS", "1")),
+        help=(
+            "Number of local worker processes for independent sweep runs. "
+            "Defaults to MAX_WORKERS from the environment, or 1."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.hidden_units is None:
@@ -225,6 +237,18 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--transaction-cost-bps values must be greater than or equal to 0.")
 
     return args
+
+
+def parse_max_workers(value: str) -> int:
+    """Parse a positive local worker count."""
+
+    try:
+        workers = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid worker count: {value!r}") from exc
+    if workers < 1:
+        raise argparse.ArgumentTypeError("--max-workers must be greater than or equal to 1.")
+    return workers
 
 
 def _build_model_configs(args: argparse.Namespace) -> list[SweepModelConfig]:

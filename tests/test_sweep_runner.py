@@ -494,6 +494,104 @@ def test_run_sweep_records_failed_run_and_continues(tmp_path: Path) -> None:
     assert "ValueError:" in error
 
 
+def test_run_sweep_parallel_writes_results_and_checkpoints_safely(
+    tmp_path: Path,
+) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = SweepRunConfig(
+        universes=[SweepUniverseConfig(name="core", data_path=data_path)],
+        folds=[_fold()],
+        models=[SweepModelConfig(model_family="baseline", model_type="ridge")],
+        signals=[SweepSignalConfig(top_k=1), SweepSignalConfig(top_k=2)],
+        output_dir=tmp_path / "sweeps",
+        run_name="parallel_append",
+        max_workers=2,
+    )
+
+    results = run_sweep(config)
+
+    results_path = tmp_path / "sweeps" / "parallel_append_results.csv"
+    completed_path = tmp_path / "sweeps" / "parallel_append_completed_keys.txt"
+    assert len(results) == 6
+    assert len(pd.read_csv(results_path)) == 6
+    assert _header_count(results_path) == 1
+    assert len(completed_path.read_text().splitlines()) == 2
+
+
+def test_run_sweep_parallel_resume_skips_completed_runs(
+    tmp_path: Path,
+) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = SweepRunConfig(
+        universes=[SweepUniverseConfig(name="core", data_path=data_path)],
+        folds=[_fold()],
+        models=[SweepModelConfig(model_family="baseline", model_type="ridge")],
+        signals=[SweepSignalConfig(top_k=1), SweepSignalConfig(top_k=2)],
+        output_dir=tmp_path / "sweeps",
+        run_name="parallel_resume",
+        max_workers=2,
+    )
+    first_results = run_sweep(config)
+
+    resumed_results = run_sweep(config)
+
+    results_path = tmp_path / "sweeps" / "parallel_resume_results.csv"
+    completed_path = tmp_path / "sweeps" / "parallel_resume_completed_keys.txt"
+    assert len(first_results) == 6
+    assert len(resumed_results) == 6
+    assert len(pd.read_csv(results_path)) == 6
+    assert _header_count(results_path) == 1
+    assert len(completed_path.read_text().splitlines()) == 2
+
+
+def test_run_sweep_parallel_records_failed_keys_and_continues(
+    tmp_path: Path,
+) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = SweepRunConfig(
+        universes=[SweepUniverseConfig(name="core", data_path=data_path)],
+        folds=[_fold()],
+        models=[
+            SweepModelConfig(model_family="baseline", model_type="not_a_model"),
+            SweepModelConfig(model_family="baseline", model_type="ridge"),
+        ],
+        signals=[SweepSignalConfig(top_k=2)],
+        output_dir=tmp_path / "sweeps",
+        run_name="parallel_failure",
+        max_workers=2,
+    )
+
+    results = run_sweep(config)
+
+    failed_path = tmp_path / "sweeps" / "parallel_failure_failed_keys.txt"
+    assert len(results) == 3
+    failed_lines = failed_path.read_text().splitlines()
+    assert len(failed_lines) == 1
+    run_key, error = failed_lines[0].split("\t", maxsplit=1)
+    assert "not_a_model" in run_key
+    assert "ValueError:" in error
+
+
+def test_run_sweep_rejects_invalid_max_workers(tmp_path: Path) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = SweepRunConfig(
+        universes=[SweepUniverseConfig(name="core", data_path=data_path)],
+        folds=[_fold()],
+        models=[SweepModelConfig(model_family="baseline", model_type="ridge")],
+        signals=[SweepSignalConfig(top_k=2)],
+        output_dir=tmp_path / "sweeps",
+        run_name="bad_workers",
+        max_workers=0,
+    )
+
+    with pytest.raises(ValueError, match="max_workers"):
+        run_sweep(config)
+
+
 def test_summarize_sweep_results_groups_test_rows() -> None:
     results = pd.DataFrame(
         [
