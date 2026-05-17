@@ -193,6 +193,22 @@ def test_run_sweep_runs_baseline_and_writes_results_and_completed_checkpoint(
     assert len(completed_path.read_text().splitlines()) == 1
 
 
+def test_run_sweep_result_rows_include_configured_metadata(tmp_path: Path) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = replace(
+        _baseline_config(tmp_path, data_path, run_name="metadata"),
+        result_metadata={"sweep_profile": "linear_quick"},
+    )
+
+    results = run_sweep(config)
+    saved = pd.read_csv(tmp_path / "sweeps" / "metadata_results.csv")
+
+    assert "sweep_profile" in results.columns
+    assert results["sweep_profile"].tolist() == ["linear_quick"] * 3
+    assert saved["sweep_profile"].tolist() == ["linear_quick"] * 3
+
+
 def test_run_sweep_result_rows_include_label_horizon_days(tmp_path: Path) -> None:
     data_path = tmp_path / "etf_daily.csv"
     _write_csv(data_path)

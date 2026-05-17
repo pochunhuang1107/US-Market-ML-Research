@@ -26,6 +26,8 @@ def test_tiingo_modern_baseline_report_builds_summary_and_decision_matrix(
     assert report_data.dataset_source == "tiingo_only"
     assert set(report_data.candidate_summary["dataset_source"]) == {"tiingo_only"}
     assert set(report_data.decision_matrix["dataset_source"]) == {"tiingo_only"}
+    assert set(report_data.candidate_summary["sweep_profile"]) == {"core_linear"}
+    assert set(report_data.decision_matrix["sweep_profile"]) == {"core_linear"}
     assert len(report_data.candidate_summary) == 160
     assert len(report_data.decision_matrix) == 160
     assert "mlp" not in set(report_data.candidate_summary["model_family"])
@@ -70,6 +72,8 @@ def test_tiingo_modern_baseline_report_cli_writes_outputs(
 
     assert set(summary["dataset_source"]) == {"tiingo_only"}
     assert set(matrix["dataset_source"]) == {"tiingo_only"}
+    assert set(summary["sweep_profile"]) == {"core_linear"}
+    assert set(matrix["sweep_profile"]) == {"core_linear"}
     assert "Executive Summary" in markdown
     assert "Best Candidates By Return" in markdown
     assert "Best Candidates By Balanced Risk/Return" in markdown
@@ -123,6 +127,7 @@ def _synthetic_results() -> pd.DataFrame:
                                 ),
                                 "universe": "tiingo_modern_dynamic",
                                 "data_path": "/tmp/tiingo.csv",
+                                "sweep_profile": "core_linear",
                                 "fold": fold_name,
                                 "split": "test",
                                 "model_family": "baseline",

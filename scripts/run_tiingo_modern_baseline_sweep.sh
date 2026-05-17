@@ -111,7 +111,10 @@ main() {
   root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   cd "$root_dir"
 
-  RUN_NAME="${RUN_NAME:-tiingo_modern_baseline_sweep}"
+  SWEEP_PROFILE="${SWEEP_PROFILE:-core_linear}"
+  if [[ -z "${RUN_NAME:-}" ]]; then
+    RUN_NAME="tiingo_modern_baseline_sweep_${SWEEP_PROFILE}"
+  fi
   OUTPUT_DIR="${OUTPUT_DIR:-artifacts/sweeps/tiingo_modern_baseline_sweep}"
   MARKET_DATASET_GLOB="${MARKET_DATASET_GLOB:-/Users/casper/Projects/Research/Market Data/data/research/etf_daily_prices_tiingo_only/**/*.parquet}"
   START_DATE="${START_DATE:-2019-01-01}"
@@ -121,10 +124,6 @@ main() {
   DRY_RUN="${DRY_RUN:-0}"
   MIN_HISTORY_ROWS="${MIN_HISTORY_ROWS:-252}"
   MIN_TRAIN_ELIGIBLE_ROWS="${MIN_TRAIN_ELIGIBLE_ROWS:-5000}"
-  STEP_MONTHS="${STEP_MONTHS:-3}"
-  TRAIN_WINDOW_YEARS="${TRAIN_WINDOW_YEARS:-2 3 5}"
-  VALIDATION_WINDOW_MONTHS="${VALIDATION_WINDOW_MONTHS:-6 12}"
-  TEST_WINDOW_MONTHS="${TEST_WINDOW_MONTHS:-3 6 12}"
 
   local results_csv completed_keys failed_keys skipped_keys terminal_log preflight_csv preflight_md
   results_csv="$OUTPUT_DIR/${RUN_NAME}_results.csv"
@@ -132,8 +131,8 @@ main() {
   failed_keys="$OUTPUT_DIR/${RUN_NAME}_failed_keys.txt"
   skipped_keys="$OUTPUT_DIR/${RUN_NAME}_skipped_keys.txt"
   terminal_log="$OUTPUT_DIR/${RUN_NAME}_terminal.log"
-  preflight_csv="$OUTPUT_DIR/tiingo_modern_baseline_sweep_preflight.csv"
-  preflight_md="$OUTPUT_DIR/tiingo_modern_baseline_sweep_preflight.md"
+  preflight_csv="$OUTPUT_DIR/${RUN_NAME}_preflight.csv"
+  preflight_md="$OUTPUT_DIR/${RUN_NAME}_preflight.md"
 
   mkdir -p "$OUTPUT_DIR"
 
@@ -142,16 +141,40 @@ main() {
     --market-dataset-glob "$MARKET_DATASET_GLOB"
     --output-dir "$OUTPUT_DIR"
     --run-name "$RUN_NAME"
+    --sweep-profile "$SWEEP_PROFILE"
     --start-date "$START_DATE"
     --end-date "$END_DATE"
     --max-workers "$MAX_WORKERS"
     --min-history-rows "$MIN_HISTORY_ROWS"
     --min-train-eligible-rows "$MIN_TRAIN_ELIGIBLE_ROWS"
-    --step-months "$STEP_MONTHS"
   )
-  append_values_arg --train-window-years "$TRAIN_WINDOW_YEARS"
-  append_values_arg --validation-window-months "$VALIDATION_WINDOW_MONTHS"
-  append_values_arg --test-window-months "$TEST_WINDOW_MONTHS"
+  if [[ -n "${STEP_MONTHS:-}" ]]; then
+    cmd+=(--step-months "$STEP_MONTHS")
+  fi
+  if [[ -n "${TRAIN_WINDOW_YEARS:-}" ]]; then
+    append_values_arg --train-window-years "$TRAIN_WINDOW_YEARS"
+  fi
+  if [[ -n "${VALIDATION_WINDOW_MONTHS:-}" ]]; then
+    append_values_arg --validation-window-months "$VALIDATION_WINDOW_MONTHS"
+  fi
+  if [[ -n "${TEST_WINDOW_MONTHS:-}" ]]; then
+    append_values_arg --test-window-months "$TEST_WINDOW_MONTHS"
+  fi
+  if [[ -n "${MODEL_TYPES:-}" ]]; then
+    append_values_arg --model-types "$MODEL_TYPES"
+  fi
+  if [[ -n "${TOP_K_VALUES:-}" ]]; then
+    append_values_arg --top-k-values "$TOP_K_VALUES"
+  fi
+  if [[ -n "${TRANSACTION_COST_BPS_VALUES:-}" ]]; then
+    append_values_arg --transaction-cost-bps-values "$TRANSACTION_COST_BPS_VALUES"
+  fi
+  if [[ -n "${MIN_HOLDING_DAYS_VALUES:-}" ]]; then
+    append_values_arg --min-holding-days-values "$MIN_HOLDING_DAYS_VALUES"
+  fi
+  if [[ -n "${SWITCH_MARGIN_VALUES:-}" ]]; then
+    append_values_arg --switch-margin-values "$SWITCH_MARGIN_VALUES"
+  fi
 
   if [[ "$RESUME" == "0" ]]; then
     cmd+=(--no-resume)
