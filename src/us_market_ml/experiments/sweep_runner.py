@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import multiprocessing
+import time
 from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -498,9 +499,21 @@ def _terminate_executor_processes(executor: ProcessPoolExecutor) -> None:
     processes = getattr(executor, "_processes", None)
     if not processes:
         return
-    for process in processes.values():
+    live_processes = [process for process in processes.values() if process.is_alive()]
+    for process in live_processes:
+        process.terminate()
+
+    deadline = time.monotonic() + 5.0
+    for process in live_processes:
+        remaining = max(0.0, deadline - time.monotonic())
+        process.join(timeout=remaining)
+
+    for process in live_processes:
         if process.is_alive():
-            process.terminate()
+            process.kill()
+
+    for process in live_processes:
+        process.join(timeout=1.0)
 
 
 def summarize_sweep_results(results: pd.DataFrame) -> pd.DataFrame:

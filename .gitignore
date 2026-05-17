@@ -23,3 +23,4 @@ scripts/*_with_progress.sh
 !scripts/create_extended_history_start_year_viability_report.sh
 !scripts/run_dynamic_extended_history_study.sh
 !scripts/run_expanded_dynamic_candidate_confirmation_study.sh
+!scripts/run_tiingo_modern_baseline_sweep.sh
