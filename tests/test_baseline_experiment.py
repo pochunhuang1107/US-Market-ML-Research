@@ -210,6 +210,54 @@ def test_no_usable_features_raise_value_error() -> None:
         run_baseline_experiment(_synthetic_etf_ohlcv(), _folds()[:1], config)
 
 
+def test_fold_train_feature_selection_excludes_validation_only_feature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = _synthetic_prebuilt_feature_dataset()
+    folds = [
+        WalkForwardFold(
+            name="fold_1",
+            train_start=pd.Timestamp("2020-01-01"),
+            train_end=pd.Timestamp("2020-01-03"),
+            validation_start=pd.Timestamp("2020-01-04"),
+            validation_end=pd.Timestamp("2020-01-04"),
+            test_start=pd.Timestamp("2020-01-05"),
+            test_end=pd.Timestamp("2020-01-06"),
+        )
+    ]
+
+    monkeypatch.setattr(
+        "us_market_ml.experiments.baseline_experiment.build_supervised_dataset",
+        lambda raw_df, dataset_config: raw_df.copy(),
+    )
+    monkeypatch.setattr(
+        "us_market_ml.experiments.baseline_experiment.get_feature_columns",
+        lambda dataset_frame, feature_set_version, extra_exclude=None: [
+            "stable_feature",
+            "validation_only_feature",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="No usable training rows"):
+        run_baseline_experiment(dataset, folds, _config())
+
+    result = run_baseline_experiment(
+        dataset,
+        folds,
+        BaselineExperimentConfig(
+            target_col="excess_return_vs_spy_20d",
+            model_config=BaselineModelConfig(model_type="linear_regression"),
+            dataset_config=SupervisedDatasetConfig(),
+            feature_selection_scope="fold_train",
+        ),
+    )
+
+    fit_result = result.fold_results[0].fit_result
+    assert fit_result.feature_cols == ["stable_feature"]
+    assert result.fold_results[0].feature_cols == ["stable_feature"]
+    assert result.fold_results[0].test_predictions["prediction"].notna().all()
+
+
 def test_raw_df_is_not_mutated() -> None:
     raw_df = _synthetic_etf_ohlcv()
     original = raw_df.copy(deep=True)
@@ -217,3 +265,22 @@ def test_raw_df_is_not_mutated() -> None:
     run_baseline_experiment(raw_df, _folds()[:1], _config())
 
     pd.testing.assert_frame_equal(raw_df, original)
+
+
+def _synthetic_prebuilt_feature_dataset() -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    dates = pd.date_range("2020-01-01", periods=6, freq="D")
+    for symbol_index, symbol in enumerate(("AAA", "BBB")):
+        for day_index, date in enumerate(dates):
+            in_training = date <= pd.Timestamp("2020-01-03")
+            rows.append(
+                {
+                    "date": date,
+                    "symbol": symbol,
+                    "close": 100.0 + day_index + symbol_index,
+                    "stable_feature": float(day_index + symbol_index),
+                    "validation_only_feature": None if in_training else float(day_index),
+                    "excess_return_vs_spy_20d": float(day_index - symbol_index),
+                }
+            )
+    return pd.DataFrame(rows)

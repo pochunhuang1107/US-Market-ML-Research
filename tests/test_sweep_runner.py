@@ -239,6 +239,30 @@ def test_run_sweep_result_rows_include_feature_set_version_and_feature_count(
     assert results["feature_count"].gt(0).all()
 
 
+def test_run_sweep_supports_dynamic_universe_and_fold_train_features(
+    tmp_path: Path,
+) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    config = SweepRunConfig(
+        universes=[SweepUniverseConfig(name="dynamic_core", data_path=data_path)],
+        folds=[_fold()],
+        models=[SweepModelConfig(model_family="baseline", model_type="ridge")],
+        signals=[SweepSignalConfig(top_k=2)],
+        output_dir=tmp_path / "sweeps",
+        run_name="dynamic",
+        universe_mode="dynamic",
+        min_history_rows=5,
+        feature_selection_scope="fold_train",
+    )
+
+    results = run_sweep(config)
+
+    assert len(results) == 3
+    assert results["feature_count"].gt(0).all()
+    assert results["top_k"].tolist() == [2, 2, 2]
+
+
 def test_run_sweep_result_rows_include_smoothing_parameters(tmp_path: Path) -> None:
     data_path = tmp_path / "etf_daily.csv"
     _write_csv(data_path)
