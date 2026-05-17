@@ -31,6 +31,11 @@ from us_market_ml.models import (
     predict_baseline,
 )
 from us_market_ml.splits import PurgeConfig, WalkForwardFold, purge_fold_boundaries
+from us_market_ml.universe import (
+    DynamicEligibilityConfig,
+    apply_dynamic_universe_eligibility,
+    select_fold_train_feature_columns,
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,10 @@ class BaselineExperimentConfig:
     prediction_col: str = "prediction"
     extra_exclude_feature_cols: set[str] | None = None
     purge_config: PurgeConfig | None = None
+    universe_mode: str = "static"
+    min_history_rows: int = 252
+    feature_selection_scope: str = "global"
+    min_feature_non_null_ratio: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -61,6 +70,7 @@ class BaselineFoldResult:
     train_predictions: pd.DataFrame
     validation_predictions: pd.DataFrame
     test_predictions: pd.DataFrame
+    feature_cols: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +105,7 @@ def run_baseline_experiment(
         raise ValueError("At least one walk-forward fold is required.")
 
     resolved_config = config if config is not None else BaselineExperimentConfig()
+    _validate_experiment_config(resolved_config)
 
     feature_set_version = _resolve_feature_set_version(resolved_config)
     dataset_config = replace(
@@ -102,7 +113,7 @@ def run_baseline_experiment(
         feature_set_version=feature_set_version,
     )
     dataset = build_supervised_dataset(raw_df, dataset_config)
-    feature_cols = get_feature_columns(
+    candidate_feature_cols = get_feature_columns(
         dataset,
         feature_set_version=feature_set_version,
         extra_exclude=resolved_config.extra_exclude_feature_cols,
@@ -113,10 +124,11 @@ def run_baseline_experiment(
             "Configured target_col is missing after supervised dataset construction: "
             f"{resolved_config.target_col}"
         )
-    if not feature_cols:
+    if not candidate_feature_cols:
         raise ValueError("No usable feature columns were found for baseline model fitting.")
 
     fold_results: list[BaselineFoldResult] = []
+    selected_feature_cols_by_fold: list[list[str]] = []
     for fold in folds:
         if resolved_config.purge_config is None:
             train_df, validation_df, test_df = fold.split(dataset)
@@ -126,6 +138,22 @@ def run_baseline_experiment(
                 fold,
                 resolved_config.purge_config,
             )
+        feature_cols = _feature_columns_for_fold(
+            train_df=train_df,
+            candidate_feature_cols=candidate_feature_cols,
+            config=resolved_config,
+        )
+        if not feature_cols:
+            raise ValueError("No usable feature columns were found for baseline model fitting.")
+
+        train_df, validation_df, test_df = _apply_universe_mode(
+            train_df=train_df,
+            validation_df=validation_df,
+            test_df=test_df,
+            eligibility_history_df=dataset,
+            feature_cols=feature_cols,
+            config=resolved_config,
+        )
         model, fit_result = fit_baseline_regressor(
             train_df=train_df,
             target_col=resolved_config.target_col,
@@ -133,6 +161,7 @@ def run_baseline_experiment(
             config=resolved_config.model_config,
             validation_df=validation_df,
         )
+        selected_feature_cols_by_fold.append(feature_cols)
 
         fold_results.append(
             BaselineFoldResult(
@@ -156,13 +185,18 @@ def run_baseline_experiment(
                     feature_cols,
                     prediction_col=resolved_config.prediction_col,
                 ),
+                feature_cols=list(feature_cols),
             )
         )
 
     return BaselineExperimentResult(
         config=resolved_config,
         dataset=dataset,
-        feature_cols=feature_cols,
+        feature_cols=_result_feature_columns(
+            candidate_feature_cols=candidate_feature_cols,
+            selected_feature_cols_by_fold=selected_feature_cols_by_fold,
+            config=resolved_config,
+        ),
         fold_results=fold_results,
     )
 
@@ -208,6 +242,87 @@ def _resolve_feature_set_version(config: BaselineExperimentConfig) -> str:
     if config.feature_set_version != DEFAULT_FEATURE_SET_VERSION:
         return config.feature_set_version
     return config.dataset_config.feature_set_version
+
+
+def _validate_experiment_config(config: BaselineExperimentConfig) -> None:
+    if config.universe_mode not in {"static", "dynamic"}:
+        raise ValueError("universe_mode must be 'static' or 'dynamic'.")
+    if config.min_history_rows < 1:
+        raise ValueError("min_history_rows must be greater than or equal to 1.")
+    if config.feature_selection_scope not in {"global", "fold_train"}:
+        raise ValueError("feature_selection_scope must be 'global' or 'fold_train'.")
+    if config.min_feature_non_null_ratio < 0.0 or config.min_feature_non_null_ratio > 1.0:
+        raise ValueError("min_feature_non_null_ratio must satisfy 0 <= value <= 1.")
+
+
+def _feature_columns_for_fold(
+    *,
+    train_df: pd.DataFrame,
+    candidate_feature_cols: list[str],
+    config: BaselineExperimentConfig,
+) -> list[str]:
+    if config.feature_selection_scope == "global":
+        return list(candidate_feature_cols)
+    return select_fold_train_feature_columns(
+        train_df,
+        candidate_feature_cols,
+        min_non_null_ratio=config.min_feature_non_null_ratio,
+    )
+
+
+def _apply_universe_mode(
+    *,
+    train_df: pd.DataFrame,
+    validation_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    eligibility_history_df: pd.DataFrame,
+    feature_cols: list[str],
+    config: BaselineExperimentConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if config.universe_mode == "static":
+        return train_df, validation_df, test_df
+
+    eligibility_config = DynamicEligibilityConfig(min_history_rows=config.min_history_rows)
+    return (
+        apply_dynamic_universe_eligibility(
+            train_df,
+            feature_cols=feature_cols,
+            target_col=config.target_col,
+            require_target=True,
+            config=eligibility_config,
+            history_df=eligibility_history_df,
+        ),
+        apply_dynamic_universe_eligibility(
+            validation_df,
+            feature_cols=feature_cols,
+            target_col=config.target_col,
+            require_target=False,
+            config=eligibility_config,
+            history_df=eligibility_history_df,
+        ),
+        apply_dynamic_universe_eligibility(
+            test_df,
+            feature_cols=feature_cols,
+            target_col=config.target_col,
+            require_target=False,
+            config=eligibility_config,
+            history_df=eligibility_history_df,
+        ),
+    )
+
+
+def _result_feature_columns(
+    *,
+    candidate_feature_cols: list[str],
+    selected_feature_cols_by_fold: list[list[str]],
+    config: BaselineExperimentConfig,
+) -> list[str]:
+    if config.feature_selection_scope == "global":
+        return list(candidate_feature_cols)
+    selected = {
+        column for feature_cols in selected_feature_cols_by_fold for column in feature_cols
+    }
+    return [column for column in candidate_feature_cols if column in selected]
 
 
 __all__ = [

@@ -173,6 +173,10 @@ class SweepRunConfig:
     max_workers: int = 1
     skipped_keys_path: Path | str | None = None
     skip_no_usable_training_rows: bool = False
+    universe_mode: str = "static"
+    min_history_rows: int = 252
+    feature_selection_scope: str = "global"
+    min_feature_non_null_ratio: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -196,6 +200,10 @@ def build_sweep_run_key(
     switch_margin: float | None = None,
     transaction_cost_bps: float = 0.0,
     feature_set_version: str = DEFAULT_FEATURE_SET_VERSION,
+    universe_mode: str = "static",
+    min_history_rows: int = 252,
+    feature_selection_scope: str = "global",
+    min_feature_non_null_ratio: float = 0.0,
 ) -> str:
     """Return a deterministic key for one universe/fold/model/signal run."""
 
@@ -215,9 +223,6 @@ def build_sweep_run_key(
         "transaction_cost_bps": transaction_cost_bps,
         "feature_set_version": feature_set_version,
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:12]
-
     if model.model_family == "baseline":
         model_part = f"baseline-{model.model_type}"
     else:
@@ -228,24 +233,37 @@ def build_sweep_run_key(
             f"scaletarget-{str(model.scale_target).lower()}"
         )
 
-    return "__".join(
-        [
-            f"universe-{_slug(universe.name)}",
-            f"fold-{_slug(fold.name)}",
-            model_part,
-            f"topk-{signal.top_k}",
-            f"hold-{effective_min_holding_days}d",
-            f"margin-{effective_switch_margin:g}",
-            f"alloc-{_slug(signal.allocation_mode)}",
-            f"temp-{signal.score_temperature:g}",
-            f"maxw-{signal.max_weight:g}",
-            f"cost-{transaction_cost_bps:g}bps",
-            f"horizon-{label_horizon_days}d",
-            f"features-{_slug(feature_set_version)}",
-            f"seed-{model.random_state}",
-            digest,
-        ]
-    )
+    key_parts = [
+        f"universe-{_slug(universe.name)}",
+        f"fold-{_slug(fold.name)}",
+        model_part,
+        f"topk-{signal.top_k}",
+        f"hold-{effective_min_holding_days}d",
+        f"margin-{effective_switch_margin:g}",
+        f"alloc-{_slug(signal.allocation_mode)}",
+        f"temp-{signal.score_temperature:g}",
+        f"maxw-{signal.max_weight:g}",
+        f"cost-{transaction_cost_bps:g}bps",
+        f"horizon-{label_horizon_days}d",
+        f"features-{_slug(feature_set_version)}",
+        f"seed-{model.random_state}",
+    ]
+    if universe_mode != "static":
+        payload["universe_mode"] = universe_mode
+        key_parts.append(f"mode-{_slug(universe_mode)}")
+    if universe_mode != "static" or min_history_rows != 252:
+        payload["min_history_rows"] = min_history_rows
+        key_parts.append(f"lookback-{min_history_rows}")
+    if feature_selection_scope != "global":
+        payload["feature_selection_scope"] = feature_selection_scope
+        key_parts.append(f"scope-{_slug(feature_selection_scope)}")
+    if min_feature_non_null_ratio != 0.0:
+        payload["min_feature_non_null_ratio"] = min_feature_non_null_ratio
+        key_parts.append(f"minnonnull-{min_feature_non_null_ratio:g}")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:12]
+
+    return "__".join([*key_parts, digest])
 
 
 def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
@@ -310,6 +328,10 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
                                 switch_margin=config.switch_margin,
                                 transaction_cost_bps=transaction_cost_bps,
                                 feature_set_version=feature_set_version,
+                                universe_mode=config.universe_mode,
+                                min_history_rows=config.min_history_rows,
+                                feature_selection_scope=config.feature_selection_scope,
+                                min_feature_non_null_ratio=config.min_feature_non_null_ratio,
                             )
                             if config.resume and run_key in completed_keys:
                                 continue
@@ -371,6 +393,10 @@ def _build_pending_tasks(
                                 switch_margin=config.switch_margin,
                                 transaction_cost_bps=transaction_cost_bps,
                                 feature_set_version=feature_set_version,
+                                universe_mode=config.universe_mode,
+                                min_history_rows=config.min_history_rows,
+                                feature_selection_scope=config.feature_selection_scope,
+                                min_feature_non_null_ratio=config.min_feature_non_null_ratio,
                             )
                             if config.resume and run_key in completed_keys:
                                 continue
@@ -676,6 +702,10 @@ def _run_baseline(
             prediction_col=config.prediction_col,
             feature_set_version=feature_set_version,
             purge_config=_purge_config_from_sweep(config),
+            universe_mode=config.universe_mode,
+            min_history_rows=config.min_history_rows,
+            feature_selection_scope=config.feature_selection_scope,
+            min_feature_non_null_ratio=config.min_feature_non_null_ratio,
         ),
         signal_config=TopKSignalConfig(
             prediction_col=config.prediction_col,
@@ -692,7 +722,12 @@ def _run_baseline(
     )
     result = run_baseline_e2e_experiment(raw_df, [fold], experiment_config)
     summary = summarize_baseline_e2e_experiment(result)
-    summary["feature_count"] = len(result.baseline_result.feature_cols)
+    if "feature_count" not in summary.columns:
+        summary["feature_count"] = len(result.baseline_result.feature_cols)
+    else:
+        summary["feature_count"] = summary["feature_count"].fillna(
+            len(result.baseline_result.feature_cols)
+        )
     return summary
 
 
@@ -723,6 +758,10 @@ def _run_mlp(
             prediction_col=config.prediction_col,
             feature_set_version=feature_set_version,
             purge_config=_purge_config_from_sweep(config),
+            universe_mode=config.universe_mode,
+            min_history_rows=config.min_history_rows,
+            feature_selection_scope=config.feature_selection_scope,
+            min_feature_non_null_ratio=config.min_feature_non_null_ratio,
         ),
         signal_config=TopKSignalConfig(
             prediction_col=config.prediction_col,
@@ -739,7 +778,12 @@ def _run_mlp(
     )
     result = run_mlp_e2e_experiment(raw_df, [fold], experiment_config)
     summary = summarize_mlp_e2e_experiment(result)
-    summary["feature_count"] = len(result.mlp_result.feature_cols)
+    if "feature_count" not in summary.columns:
+        summary["feature_count"] = len(result.mlp_result.feature_cols)
+    else:
+        summary["feature_count"] = summary["feature_count"].fillna(
+            len(result.mlp_result.feature_cols)
+        )
     return summary
 
 
@@ -768,6 +812,14 @@ def _validate_sweep_config(config: SweepRunConfig) -> None:
         raise ValueError("At least one transaction_cost_bps value is required.")
     if any(value < 0.0 for value in config.transaction_cost_bps_values):
         raise ValueError("transaction_cost_bps values must be greater than or equal to 0.")
+    if config.universe_mode not in {"static", "dynamic"}:
+        raise ValueError("universe_mode must be 'static' or 'dynamic'.")
+    if config.min_history_rows < 1:
+        raise ValueError("min_history_rows must be greater than or equal to 1.")
+    if config.feature_selection_scope not in {"global", "fold_train"}:
+        raise ValueError("feature_selection_scope must be 'global' or 'fold_train'.")
+    if config.min_feature_non_null_ratio < 0.0 or config.min_feature_non_null_ratio > 1.0:
+        raise ValueError("min_feature_non_null_ratio must satisfy 0 <= value <= 1.")
 
 
 def _to_walk_forward_fold(config: SweepFoldConfig) -> WalkForwardFold:
