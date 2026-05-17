@@ -20,3 +20,4 @@ scripts/*_with_progress.sh
 # Local shell runners
 *.sh
 !scripts/run_extended_history_overnight_study.sh
+!scripts/create_extended_history_start_year_viability_report.sh
