@@ -11,6 +11,7 @@ MAX_WORKERS="${MAX_WORKERS:-4}"
 RESUME="${RESUME:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 MIN_HISTORY_ROWS="${MIN_HISTORY_ROWS:-252}"
+MIN_TRAIN_ELIGIBLE_ROWS="${MIN_TRAIN_ELIGIBLE_ROWS:-5000}"
 STEP_MONTHS="${STEP_MONTHS:-6}"
 
 RESULTS_CSV="$OUTPUT_DIR/${RUN_NAME}_results.csv"
@@ -30,6 +31,7 @@ cmd=(
   --market-dataset-glob "$MARKET_DATASET_GLOB"
   --max-workers "$MAX_WORKERS"
   --min-history-rows "$MIN_HISTORY_ROWS"
+  --min-train-eligible-rows "$MIN_TRAIN_ELIGIBLE_ROWS"
   --step-months "$STEP_MONTHS"
 )
 
@@ -101,7 +103,7 @@ terminate_child() {
   wait "$child_pid" 2>/dev/null || true
   print_progress
   printf 'Resume later with:\n'
-  printf '  env RESUME=1 MAX_WORKERS=%q bash scripts/run_expanded_dynamic_candidate_confirmation_study.sh\n' "$MAX_WORKERS"
+  printf '  env RESUME=1 MAX_WORKERS=%q MIN_TRAIN_ELIGIBLE_ROWS=%q bash scripts/run_expanded_dynamic_candidate_confirmation_study.sh\n' "$MAX_WORKERS" "$MIN_TRAIN_ELIGIBLE_ROWS"
   exit 130
 }
 

@@ -63,6 +63,7 @@ def test_expanded_dynamic_plan_uses_exact_candidate_pairs_and_dynamic_defaults(
         "equal_weight"
     }
     assert plan.estimated_total_configs == 8
+    assert plan.min_train_eligible_rows == 5000
 
 
 def test_expanded_dynamic_cli_dry_run_writes_preflight_artifacts(
@@ -95,6 +96,8 @@ def test_expanded_dynamic_cli_dry_run_writes_preflight_artifacts(
             "3",
             "--min-history-rows",
             "5",
+            "--min-train-eligible-rows",
+            "1",
         ]
     )
 
@@ -134,11 +137,87 @@ def test_expanded_dynamic_cli_dry_run_writes_preflight_artifacts(
     assert set(preflight["allocation_mode"]) == {"equal_weight"}
     assert set(preflight["transaction_cost_bps"]) == {10.0, 20.0}
     assert preflight["selected_feature_count"].min() > 0
-    assert preflight["valid_config"].sum() > 0
+    assert preflight["valid_config"].all()
+    assert set(preflight["min_train_eligible_rows"]) == {1}
     markdown = preflight_md.read_text(encoding="utf-8")
     assert markdown.startswith("# Expanded Dynamic Candidate Confirmation Preflight")
     assert "Universe mode: `dynamic`" in markdown
     assert "Feature selection scope: `fold_train`" in markdown
+    assert "Minimum train eligible rows: `1`" in markdown
+    assert "Invalid/Thin Fold Preview" in markdown
+
+
+def test_expanded_dynamic_cli_dry_run_marks_low_row_folds_invalid_by_default(
+    tmp_path: Path,
+) -> None:
+    data_path = tmp_path / "market.csv"
+    _synthetic_market_data().to_csv(data_path, index=False)
+
+    exit_code = run_expanded_dynamic_candidate_confirmation_study_from_args(
+        [
+            "--dry-run",
+            "--market-dataset-glob",
+            str(data_path),
+            "--output-dir",
+            str(tmp_path / "study"),
+            "--run-name",
+            "expanded_dynamic_candidate_confirmation_study",
+            "--data-start",
+            "2020-01-01",
+            "--data-end",
+            "2021-09-30",
+            "--train-window-years",
+            "1",
+            "--validation-window-months",
+            "1",
+            "--test-window-months",
+            "3",
+            "--step-months",
+            "3",
+            "--min-history-rows",
+            "5",
+        ]
+    )
+
+    preflight_csv = (
+        tmp_path
+        / "study"
+        / "expanded_dynamic_candidate_confirmation_preflight.csv"
+    )
+    preflight_md = (
+        tmp_path
+        / "study"
+        / "expanded_dynamic_candidate_confirmation_preflight.md"
+    )
+    skipped = (
+        tmp_path
+        / "study"
+        / "expanded_dynamic_candidate_confirmation_study_skipped_keys.txt"
+    )
+    preflight = pd.read_csv(preflight_csv)
+    skipped_keys = [
+        line
+        for line in skipped.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert exit_code == 0
+    assert set(preflight["min_train_eligible_rows"]) == {5000}
+    assert (preflight["train_eligible_row_count"] < 5000).all()
+    assert not preflight["valid_config"].any()
+    assert preflight["invalid_reason"].str.contains(
+        "train_eligible_row_count below min_train_eligible_rows",
+        regex=False,
+    ).all()
+    assert len(skipped_keys) == len(preflight)
+
+    markdown = preflight_md.read_text(encoding="utf-8")
+    assert "Minimum train eligible rows: `5000`" in markdown
+    assert "Total configs: `24`" in markdown
+    assert "Valid configs: `0`" in markdown
+    assert "Skipped configs: `24`" in markdown
+    assert "Invalid/Thin Fold Preview" in markdown
+    assert "train_eligible_row_count below min_train_eligible_rows" in markdown
 
 
 def test_expanded_dynamic_shell_runner_has_required_overrides_and_progress() -> None:
@@ -154,6 +233,8 @@ def test_expanded_dynamic_shell_runner_has_required_overrides_and_progress() -> 
     assert "RESUME=" in script
     assert "DRY_RUN=" in script
     assert "MIN_HISTORY_ROWS=" in script
+    assert "MIN_TRAIN_ELIGIBLE_ROWS=" in script
+    assert '--min-train-eligible-rows "$MIN_TRAIN_ELIGIBLE_ROWS"' in script
     assert "STEP_MONTHS=" in script
     assert "sleep 60" in script
     assert "completed=%s skipped=%s failed=%s result_rows=%s" in script

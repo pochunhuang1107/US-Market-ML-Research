@@ -58,6 +58,7 @@ TARGET_COL = "excess_return_vs_spy_20d"
 FEATURE_SET_VERSION = "default_features_v1"
 LABEL_HORIZON_DAYS = 20
 MIN_HISTORY_ROWS = 252
+DEFAULT_MIN_TRAIN_ELIGIBLE_ROWS = 5_000
 MIN_HOLDING_DAYS = 10
 SWITCH_MARGIN = 0.002
 RANDOM_STATE = 42
@@ -89,6 +90,7 @@ PREFLIGHT_COLUMNS = [
     "allocation_mode",
     "transaction_cost_bps",
     "selected_feature_count",
+    "min_train_eligible_rows",
     "train_eligible_row_count",
     "validation_eligible_row_count",
     "test_eligible_row_count",
@@ -145,6 +147,7 @@ class ExpandedDynamicCandidateConfirmationPlan:
     candidate_specs: tuple[ExpandedCandidateSpec, ...]
     run_configs: tuple[SweepRunConfig, ...]
     step_months: int
+    min_train_eligible_rows: int
 
     @property
     def template_config(self) -> SweepRunConfig:
@@ -204,6 +207,7 @@ def run_expanded_dynamic_candidate_confirmation_study_from_args(
         resume=args.resume,
         max_workers=args.max_workers,
         min_history_rows=args.min_history_rows,
+        min_train_eligible_rows=args.min_train_eligible_rows,
         min_feature_non_null_ratio=args.min_feature_non_null_ratio,
         step_months=args.step_months,
     )
@@ -266,6 +270,7 @@ def build_expanded_dynamic_candidate_confirmation_plan(
     resume: bool,
     max_workers: int,
     min_history_rows: int = MIN_HISTORY_ROWS,
+    min_train_eligible_rows: int = DEFAULT_MIN_TRAIN_ELIGIBLE_ROWS,
     min_feature_non_null_ratio: float = 0.0,
     step_months: int = DEFAULT_STEP_MONTHS,
 ) -> ExpandedDynamicCandidateConfirmationPlan:
@@ -308,6 +313,7 @@ def build_expanded_dynamic_candidate_confirmation_plan(
         candidate_specs=CANDIDATE_SPECS,
         run_configs=tuple(run_configs),
         step_months=step_months,
+        min_train_eligible_rows=min_train_eligible_rows,
     )
 
 
@@ -407,7 +413,7 @@ def _build_preflight_rows(
                     supports_top_k = (
                         fold_counts["min_symbols_per_test_date"] >= signal_config.top_k
                     )
-                    invalid_reason = _invalid_reason(
+                    invalid_reason = _expanded_invalid_reason(
                         selected_feature_count=fold_counts["selected_feature_count"],
                         train_eligible_row_count=fold_counts["train_eligible_row_count"],
                         validation_eligible_row_count=fold_counts[
@@ -418,6 +424,7 @@ def _build_preflight_rows(
                         validation_symbol_count=fold_counts["validation_symbol_count"],
                         test_symbol_count=fold_counts["test_symbol_count"],
                         supports_top_k=supports_top_k,
+                        min_train_eligible_rows=plan.min_train_eligible_rows,
                     )
                     run_key = build_sweep_run_key(
                         universe=universe,
@@ -452,6 +459,7 @@ def _build_preflight_rows(
                             "top_k": signal_config.top_k,
                             "allocation_mode": signal_config.allocation_mode,
                             "transaction_cost_bps": transaction_cost_bps,
+                            "min_train_eligible_rows": plan.min_train_eligible_rows,
                             **fold_counts,
                             "supports_top_k": supports_top_k,
                             "valid_config": invalid_reason == "",
@@ -482,6 +490,7 @@ def _render_preflight_markdown(
         f"- Universe mode: `{config.universe_mode}`",
         f"- Feature selection scope: `{config.feature_selection_scope}`",
         f"- Minimum history rows: `{config.min_history_rows}`",
+        f"- Minimum train eligible rows: `{plan.min_train_eligible_rows}`",
         f"- Target: `{config.target_col}`",
         f"- Label horizon days: `{config.label_horizon_days}`",
         f"- Feature set: `{config.feature_set_versions[0]}`",
@@ -533,17 +542,22 @@ def _render_preflight_markdown(
             ],
         ),
         "",
-        "## Invalid Preview",
+        "## Invalid/Thin Fold Preview",
         "",
         _markdown_table(
             invalid_preview,
             [
                 "fold_name",
+                "train_window_years",
+                "validation_window_months",
+                "test_window_months",
                 "model_type",
                 "top_k",
                 "allocation_mode",
                 "transaction_cost_bps",
                 "selected_feature_count",
+                "train_eligible_row_count",
+                "min_train_eligible_rows",
                 "min_symbols_per_test_date",
                 "invalid_reason",
             ],
@@ -589,6 +603,37 @@ def _candidate_preflight_summary(frame: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _expanded_invalid_reason(
+    *,
+    selected_feature_count: int,
+    train_eligible_row_count: int,
+    validation_eligible_row_count: int,
+    test_eligible_row_count: int,
+    train_symbol_count: int,
+    validation_symbol_count: int,
+    test_symbol_count: int,
+    supports_top_k: bool,
+    min_train_eligible_rows: int,
+) -> str:
+    base_reason = _invalid_reason(
+        selected_feature_count=selected_feature_count,
+        train_eligible_row_count=train_eligible_row_count,
+        validation_eligible_row_count=validation_eligible_row_count,
+        test_eligible_row_count=test_eligible_row_count,
+        train_symbol_count=train_symbol_count,
+        validation_symbol_count=validation_symbol_count,
+        test_symbol_count=test_symbol_count,
+        supports_top_k=supports_top_k,
+    )
+    reasons = [base_reason] if base_reason else []
+    if train_eligible_row_count < min_train_eligible_rows:
+        reasons.append(
+            "train_eligible_row_count below min_train_eligible_rows: "
+            f"{train_eligible_row_count} < {min_train_eligible_rows}"
+        )
+    return ";".join(reasons)
+
+
 def _print_plan(
     *,
     plan: ExpandedDynamicCandidateConfirmationPlan,
@@ -607,6 +652,7 @@ def _print_plan(
     print(f"universe_mode: {config.universe_mode}")
     print(f"feature_selection_scope: {config.feature_selection_scope}")
     print(f"min_history_rows: {config.min_history_rows}")
+    print(f"min_train_eligible_rows: {plan.min_train_eligible_rows}")
     print(f"run_name: {config.run_name}")
     print(f"output_dir: {output_dir}")
     print(f"preflight CSV: {preflight.csv_path}")
@@ -659,6 +705,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="Number of local worker processes. Defaults to MAX_WORKERS or 4.",
     )
     parser.add_argument("--min-history-rows", type=_parse_positive_int, default=MIN_HISTORY_ROWS)
+    parser.add_argument(
+        "--min-train-eligible-rows",
+        type=_parse_positive_int,
+        default=DEFAULT_MIN_TRAIN_ELIGIBLE_ROWS,
+        help=(
+            "Minimum train-eligible rows required for each expanded dynamic config. "
+            "Defaults to 5000."
+        ),
+    )
     parser.add_argument(
         "--step-months",
         type=_parse_positive_int,
@@ -749,6 +804,8 @@ def _equivalent_command(plan: ExpandedDynamicCandidateConfirmationPlan) -> list[
         str(config.max_workers),
         "--min-history-rows",
         str(config.min_history_rows),
+        "--min-train-eligible-rows",
+        str(plan.min_train_eligible_rows),
         "--step-months",
         str(plan.step_months),
     ]
