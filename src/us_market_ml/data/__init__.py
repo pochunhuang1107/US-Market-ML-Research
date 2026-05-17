@@ -13,6 +13,7 @@ from us_market_ml.data.local_reader import (
     normalize_market_data_frame,
     read_csv_files,
     read_local_market_data,
+    read_local_market_data_glob,
     read_parquet_files,
     validate_market_data_columns,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "normalize_market_data_frame",
     "read_csv_files",
     "read_local_market_data",
+    "read_local_market_data_glob",
     "read_parquet_files",
     "read_s3_curated_etf_data",
     "read_s3_parquet_object",

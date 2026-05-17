@@ -19,3 +19,4 @@ scripts/*_with_progress.sh
 
 # Local shell runners
 *.sh
+!scripts/run_extended_history_overnight_study.sh

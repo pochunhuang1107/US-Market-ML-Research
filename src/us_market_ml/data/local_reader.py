@@ -9,6 +9,7 @@ mutated.
 
 from __future__ import annotations
 
+import glob
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,11 @@ def read_local_market_data(
     artifacts, or mutate source files.
     """
 
+    path_text = str(path)
+    glob_paths = _expand_supported_glob(path_text)
+    if glob_paths is not None:
+        return _read_supported_paths(glob_paths, config)
+
     resolved_path = Path(path)
     if not resolved_path.exists():
         raise FileNotFoundError(f"Local market data path does not exist: {resolved_path}")
@@ -77,6 +83,23 @@ def read_local_market_data(
         "Unsupported local market data file extension "
         f"{resolved_path.suffix!r}; expected .parquet or .csv."
     )
+
+
+def read_local_market_data_glob(
+    pattern: str | Path,
+    config: LocalMarketDataConfig | None = None,
+) -> pd.DataFrame:
+    """Read local market data files matched by a glob pattern.
+
+    This is a convenience wrapper around ``read_local_market_data`` for callers
+    that want to be explicit about glob input. Paths are expanded locally only;
+    S3 URIs and remote filesystems are intentionally outside this reader.
+    """
+
+    glob_paths = _expand_supported_glob(str(pattern), require_glob=True)
+    if glob_paths is None:
+        raise ValueError(f"Local market data glob pattern contains no glob magic: {pattern}")
+    return _read_supported_paths(glob_paths, config)
 
 
 def read_parquet_files(
@@ -161,6 +184,34 @@ def _resolve_non_empty_paths(paths: Sequence[str | Path]) -> list[Path]:
     return resolved_paths
 
 
+def _expand_supported_glob(pattern: str, *, require_glob: bool = False) -> list[Path] | None:
+    if not glob.has_magic(pattern):
+        if require_glob:
+            return None
+        return None
+
+    matched_paths = sorted(Path(path) for path in glob.glob(pattern, recursive=True))
+    file_paths = [path for path in matched_paths if path.is_file()]
+    if not file_paths:
+        raise FileNotFoundError(f"Local market data glob matched no files: {pattern}")
+    return file_paths
+
+
+def _read_supported_paths(
+    paths: Sequence[Path],
+    config: LocalMarketDataConfig | None,
+) -> pd.DataFrame:
+    parquet_paths = [path for path in paths if path.suffix.lower() == ".parquet"]
+    if parquet_paths:
+        return read_parquet_files(parquet_paths, config)
+
+    csv_paths = [path for path in paths if path.suffix.lower() == ".csv"]
+    if csv_paths:
+        return read_csv_files(csv_paths, config)
+
+    raise ValueError("Local market data glob matched no supported .parquet or .csv files.")
+
+
 def _find_supported_files(directory: Path, suffix: str) -> list[Path]:
     return sorted(
         path for path in directory.rglob("*") if path.is_file() and path.suffix.lower() == suffix
@@ -172,6 +223,7 @@ __all__ = [
     "normalize_market_data_frame",
     "read_csv_files",
     "read_local_market_data",
+    "read_local_market_data_glob",
     "read_parquet_files",
     "validate_market_data_columns",
 ]
