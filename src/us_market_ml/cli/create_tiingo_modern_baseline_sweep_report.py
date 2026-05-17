@@ -40,6 +40,7 @@ REQUIRED_RESULTS_COLUMNS = [
 
 SUMMARY_GROUP_COLUMNS = [
     "dataset_source",
+    "sweep_profile",
     "model_family",
     "model_type",
     "top_k",
@@ -74,6 +75,7 @@ DECISION_MATRIX_COLUMNS = [
     "candidate_id",
     "candidate_label",
     "dataset_source",
+    "sweep_profile",
     "model_family",
     "model_type",
     "top_k",
@@ -163,19 +165,33 @@ def build_tiingo_modern_baseline_sweep_report(
 
     cost_sensitivity = _build_dimension_table(
         included,
-        ["model_family", "model_type", "top_k", "allocation_mode", "transaction_cost_bps"],
+        [
+            "sweep_profile",
+            "model_family",
+            "model_type",
+            "top_k",
+            "allocation_mode",
+            "transaction_cost_bps",
+        ],
     )
     smoothing_sensitivity = _build_dimension_table(
         included,
-        ["model_family", "model_type", "top_k", "min_holding_days", "switch_margin"],
+        [
+            "sweep_profile",
+            "model_family",
+            "model_type",
+            "top_k",
+            "min_holding_days",
+            "switch_margin",
+        ],
     )
     train_window_stability = _build_dimension_table(
         included,
-        ["model_family", "model_type", "top_k", "train_window_years"],
+        ["sweep_profile", "model_family", "model_type", "top_k", "train_window_years"],
     )
     test_window_stability = _build_dimension_table(
         included,
-        ["model_family", "model_type", "top_k", "test_window_months"],
+        ["sweep_profile", "model_family", "model_type", "top_k", "test_window_months"],
     )
     candidate_summary = _sort_candidate_summary(
         _build_candidate_summary(
@@ -385,6 +401,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 def _enrich_test_rows(test_rows: pd.DataFrame) -> pd.DataFrame:
     output = test_rows.copy()
     output["dataset_source"] = DATASET_SOURCE_LABEL
+    if "sweep_profile" not in output.columns:
+        output["sweep_profile"] = "unknown"
+    else:
+        output["sweep_profile"] = output["sweep_profile"].fillna("unknown")
     for column in [
         "top_k",
         "min_holding_days",
@@ -474,6 +494,7 @@ def _build_decision_matrix(candidate_summary: pd.DataFrame) -> pd.DataFrame:
                 "candidate_id": row["candidate_id"],
                 "candidate_label": row["candidate_label"],
                 "dataset_source": row["dataset_source"],
+                "sweep_profile": row["sweep_profile"],
                 "model_family": row["model_family"],
                 "model_type": row["model_type"],
                 "top_k": int(row["top_k"]),
@@ -509,7 +530,11 @@ def _build_dimension_table(test_rows: pd.DataFrame, group_cols: list[str]) -> pd
     table = (
         test_rows.groupby(group_cols, dropna=False, sort=True)
         .agg(
-            window_count=("run_key", "count") if "run_key" in test_rows.columns else ("fold", "count"),
+            window_count=(
+                ("run_key", "count")
+                if "run_key" in test_rows.columns
+                else ("fold", "count")
+            ),
             average_test_return=("total_return", "mean"),
             median_test_return=("total_return", "median"),
             positive_window_rate=("total_return", _positive_rate),
@@ -531,16 +556,19 @@ def _build_family_metrics(
     smoothing_sensitivity: pd.DataFrame,
     train_window_stability: pd.DataFrame,
     test_window_stability: pd.DataFrame,
-) -> dict[tuple[str, str, int], dict[str, str]]:
-    output: dict[tuple[str, str, int], dict[str, str]] = {}
+) -> dict[tuple[str, str, str, int], dict[str, str]]:
+    output: dict[tuple[str, str, str, int], dict[str, str]] = {}
     for frame, metric_name in [
         (cost_sensitivity, "cost_sensitivity"),
         (smoothing_sensitivity, "smoothing_sensitivity"),
         (train_window_stability, "train_window_stability"),
         (test_window_stability, "test_window_stability"),
     ]:
-        for key, group in frame.groupby(["model_family", "model_type", "top_k"], sort=False):
-            family_key = (str(key[0]), str(key[1]), int(key[2]))
+        for key, group in frame.groupby(
+            ["sweep_profile", "model_family", "model_type", "top_k"],
+            sort=False,
+        ):
+            family_key = (str(key[0]), str(key[1]), str(key[2]), int(key[3]))
             output.setdefault(family_key, {})[metric_name] = _sensitivity_rating(group)
     return output
 
@@ -691,8 +719,10 @@ def _parse_fold_metadata(fold_name: str) -> dict[str, object] | None:
 
 
 def _candidate_id_from_row(row: pd.Series) -> str:
+    profile = str(row.get("sweep_profile", "unknown"))
+    profile_part = "" if profile == "unknown" else f"profile:{profile}:"
     return (
-        f"{row['model_family']}:{row['model_type']}:top{int(row['top_k'])}:"
+        f"{profile_part}{row['model_family']}:{row['model_type']}:top{int(row['top_k'])}:"
         f"hold{int(row['min_holding_days'])}:margin{float(row['switch_margin']):g}:"
         f"cost{float(row['transaction_cost_bps']):g}:tw{int(row['train_window_years'])}:"
         f"v{int(row['validation_window_months'])}:t{int(row['test_window_months'])}"
@@ -709,8 +739,13 @@ def _candidate_label_from_row(row: pd.Series) -> str:
     )
 
 
-def _family_key(row: pd.Series) -> tuple[str, str, int]:
-    return (str(row["model_family"]), str(row["model_type"]), int(row["top_k"]))
+def _family_key(row: pd.Series) -> tuple[str, str, str, int]:
+    return (
+        str(row["sweep_profile"]),
+        str(row["model_family"]),
+        str(row["model_type"]),
+        int(row["top_k"]),
+    )
 
 
 def _positive_rate(values: pd.Series) -> float:

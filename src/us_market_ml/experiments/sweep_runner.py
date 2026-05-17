@@ -178,6 +178,7 @@ class SweepRunConfig:
     min_history_rows: int = 252
     feature_selection_scope: str = "global"
     min_feature_non_null_ratio: float = 0.0
+    result_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -278,12 +279,13 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
     completed_path = output_dir / f"{config.run_name}_completed_keys.txt"
     failed_path = output_dir / f"{config.run_name}_failed_keys.txt"
     skipped_path = Path(config.skipped_keys_path) if config.skipped_keys_path is not None else None
+    result_columns = _result_columns(config)
 
     if not config.resume:
         for path in (results_path, completed_path, failed_path):
             path.unlink(missing_ok=True)
 
-    _ensure_results_file(results_path)
+    _ensure_results_file(results_path, result_columns)
     completed_path.touch(exist_ok=True)
     failed_path.touch(exist_ok=True)
     if skipped_path is not None:
@@ -294,7 +296,7 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
     skipped_keys = _read_checkpoint_keys(skipped_path) if skipped_path is not None else set()
     results_frames: list[pd.DataFrame] = []
     if config.resume and results_path.exists():
-        existing_results = _read_results(results_path)
+        existing_results = _read_results(results_path, result_columns)
         if not existing_results.empty:
             results_frames.append(existing_results)
 
@@ -309,6 +311,7 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
             skipped_path=skipped_path,
             completed_keys=completed_keys,
             results_frames=results_frames,
+            result_columns=result_columns,
         )
 
     for universe in config.universes:
@@ -359,16 +362,16 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
                                 _append_failed_key(failed_path, run_key, exc)
                                 continue
 
-                            run_results = pd.DataFrame(run_rows, columns=RESULT_COLUMNS)
-                            _append_results(results_path, run_results)
+                            run_results = pd.DataFrame(run_rows, columns=result_columns)
+                            _append_results(results_path, run_results, result_columns)
                             _append_line(completed_path, run_key)
                             completed_keys.add(run_key)
                             results_frames.append(run_results)
 
     if not results_frames:
-        return pd.DataFrame(columns=RESULT_COLUMNS)
+        return pd.DataFrame(columns=result_columns)
 
-    return pd.concat(results_frames, ignore_index=True)[RESULT_COLUMNS]
+    return pd.concat(results_frames, ignore_index=True)[result_columns]
 
 
 def _build_pending_tasks(
@@ -427,6 +430,7 @@ def _run_sweep_parallel(
     skipped_path: Path | None,
     completed_keys: set[str],
     results_frames: list[pd.DataFrame],
+    result_columns: list[str],
 ) -> pd.DataFrame:
     if tasks:
         executor = ProcessPoolExecutor(
@@ -449,8 +453,8 @@ def _run_sweep_parallel(
                     _append_failed_key(failed_path, task.run_key, exc)
                     continue
 
-                run_results = pd.DataFrame(run_rows, columns=RESULT_COLUMNS)
-                _append_results(results_path, run_results)
+                run_results = pd.DataFrame(run_rows, columns=result_columns)
+                _append_results(results_path, run_results, result_columns)
                 _append_line(completed_path, task.run_key)
                 completed_keys.add(task.run_key)
                 results_frames.append(run_results)
@@ -464,9 +468,9 @@ def _run_sweep_parallel(
             executor.shutdown()
 
     if not results_frames:
-        return pd.DataFrame(columns=RESULT_COLUMNS)
+        return pd.DataFrame(columns=result_columns)
 
-    return pd.concat(results_frames, ignore_index=True)[RESULT_COLUMNS]
+    return pd.concat(results_frames, ignore_index=True)[result_columns]
 
 
 _WORKER_DATA_CACHE: dict[str, pd.DataFrame] = {}
@@ -691,6 +695,7 @@ def _run_one_configuration(
                 "mean_daily_turnover": summary_row.get("mean_daily_turnover", np.nan),
                 "max_daily_turnover": summary_row.get("max_daily_turnover", np.nan),
                 "epochs_trained": summary_row.get("epochs_trained", np.nan),
+                **config.result_metadata,
             }
         )
     return rows
@@ -833,6 +838,18 @@ def _validate_sweep_config(config: SweepRunConfig) -> None:
         raise ValueError("feature_selection_scope must be 'global' or 'fold_train'.")
     if config.min_feature_non_null_ratio < 0.0 or config.min_feature_non_null_ratio > 1.0:
         raise ValueError("min_feature_non_null_ratio must satisfy 0 <= value <= 1.")
+    if any(not isinstance(column, str) or not column for column in config.result_metadata):
+        raise ValueError("result_metadata keys must be non-empty strings.")
+    conflicting_columns = sorted(set(config.result_metadata).intersection(RESULT_COLUMNS))
+    if conflicting_columns:
+        raise ValueError(
+            "result_metadata keys must not overlap built-in result columns: "
+            f"{conflicting_columns}"
+        )
+
+
+def _result_columns(config: SweepRunConfig) -> list[str]:
+    return [*RESULT_COLUMNS, *config.result_metadata.keys()]
 
 
 def _to_walk_forward_fold(config: SweepFoldConfig) -> WalkForwardFold:
@@ -847,24 +864,38 @@ def _to_walk_forward_fold(config: SweepFoldConfig) -> WalkForwardFold:
     )
 
 
-def _append_results(path: Path, results: pd.DataFrame) -> None:
-    _ensure_results_file(path)
-    results.to_csv(path, mode="a", header=False, index=False)
+def _append_results(path: Path, results: pd.DataFrame, columns: list[str] | None = None) -> None:
+    result_columns = columns if columns is not None else RESULT_COLUMNS
+    _ensure_results_file(path, result_columns)
+    results.loc[:, result_columns].to_csv(path, mode="a", header=False, index=False)
 
 
-def _ensure_results_file(path: Path) -> None:
+def _ensure_results_file(path: Path, columns: list[str] | None = None) -> None:
+    result_columns = columns if columns is not None else RESULT_COLUMNS
     if not path.exists() or path.stat().st_size == 0:
-        pd.DataFrame(columns=RESULT_COLUMNS).to_csv(path, index=False)
+        pd.DataFrame(columns=result_columns).to_csv(path, index=False)
+        return
+
+    existing_header = list(pd.read_csv(path, nrows=0).columns)
+    if existing_header == result_columns:
+        return
+
+    existing_results = pd.read_csv(path)
+    missing_columns = [column for column in result_columns if column not in existing_header]
+    for column in missing_columns:
+        existing_results[column] = np.nan
+    existing_results.loc[:, result_columns].to_csv(path, index=False)
 
 
-def _read_results(path: Path) -> pd.DataFrame:
+def _read_results(path: Path, columns: list[str] | None = None) -> pd.DataFrame:
+    result_columns = columns if columns is not None else RESULT_COLUMNS
     if not path.exists() or path.stat().st_size == 0:
-        return pd.DataFrame(columns=RESULT_COLUMNS)
+        return pd.DataFrame(columns=result_columns)
     results = pd.read_csv(path)
-    for column in RESULT_COLUMNS:
+    for column in result_columns:
         if column not in results.columns:
             results[column] = np.nan
-    return results[RESULT_COLUMNS]
+    return results[result_columns]
 
 
 def _read_checkpoint_keys(path: Path) -> set[str]:
