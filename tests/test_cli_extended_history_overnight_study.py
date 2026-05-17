@@ -3,11 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
+import us_market_ml.cli.run_extended_history_overnight_study as extended_cli
 from us_market_ml.cli.run_extended_history_overnight_study import (
+    ExtendedFold,
     build_extended_history_folds,
     build_extended_history_report,
     build_extended_history_sweep_config,
+    run_extended_history_overnight_study_from_args,
+)
+from us_market_ml.experiments import (
+    SweepFoldConfig,
 )
 
 
@@ -87,6 +94,81 @@ def test_extended_history_report_writes_rank_and_regime_outputs(tmp_path: Path) 
     )
 
 
+def test_extended_history_cli_dry_run_includes_skipped_estimate_and_report_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data_path = tmp_path / "market.csv"
+    _synthetic_market_data().to_csv(data_path, index=False)
+    folds = [
+        ExtendedFold(
+            fold=SweepFoldConfig(
+                name="valid_fold",
+                train_start="2020-06-01",
+                train_end="2020-10-31",
+                validation_start="2020-11-01",
+                validation_end="2020-11-30",
+                test_start="2020-12-01",
+                test_end="2020-12-31",
+            ),
+            study_design="test",
+            regime="ordinary",
+        ),
+        ExtendedFold(
+            fold=SweepFoldConfig(
+                name="invalid_empty_fold",
+                train_start="1999-01-01",
+                train_end="1999-12-31",
+                validation_start="2000-01-01",
+                validation_end="2000-01-31",
+                test_start="2000-02-01",
+                test_end="2000-02-29",
+            ),
+            study_design="test",
+            regime="dot_com",
+        ),
+    ]
+    monkeypatch.setattr(extended_cli, "build_extended_history_folds", lambda *_: folds)
+
+    exit_code = run_extended_history_overnight_study_from_args(
+        [
+            "--dry-run",
+            "--market-dataset-glob",
+            str(data_path),
+            "--output-dir",
+            str(tmp_path / "study"),
+            "--run-name",
+            "extended_history_overnight_study",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    report = tmp_path / "study" / "extended_history_invalid_fold_report.csv"
+    skipped = tmp_path / "study" / "extended_history_overnight_study_skipped_keys.txt"
+    invalid_report = pd.read_csv(report)
+
+    assert exit_code == 0
+    assert "estimated independent configs: 36" in captured.out
+    assert "estimated valid configs: 18" in captured.out
+    assert "estimated skipped invalid configs: 18" in captured.out
+    assert "fold count: 2" in captured.out
+    assert "signal count: 9" in captured.out
+    assert f"skipped checkpoint: {skipped}" in captured.out
+    assert f"invalid fold report: {report}" in captured.out
+    assert len(skipped.read_text(encoding="utf-8").splitlines()) == 18
+    assert set(invalid_report["reason"]) == {
+        "skipped_invalid_fold: insufficient_usable_train_rows"
+    }
+
+
+def test_extended_history_shell_progress_includes_skipped_and_total() -> None:
+    script = Path("scripts/run_extended_history_overnight_study.sh").read_text(encoding="utf-8")
+
+    assert "completed=%s skipped=%s failed=%s result_rows=%s total=%s" in script
+    assert 'SKIPPED_KEYS="$OUTPUT_DIR/${RUN_NAME}_skipped_keys.txt"' in script
+
+
 def _result_row(
     fold: str,
     top_k: int,
@@ -136,3 +218,28 @@ def _result_row(
         "max_daily_turnover": 1.0,
         "epochs_trained": None,
     }
+
+
+def _synthetic_market_data() -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    dates = pd.date_range("2020-01-01", periods=500, freq="D")
+    for symbol_index, symbol in enumerate(("SPY", "QQQ", "TLT")):
+        base_price = 100.0 + symbol_index * 10.0
+        for day_index, date in enumerate(dates):
+            close = base_price + day_index * (0.1 + symbol_index * 0.02)
+            rows.append(
+                {
+                    "date": date,
+                    "symbol": symbol,
+                    "open": close - 0.1,
+                    "high": close + 0.5,
+                    "low": close - 0.5,
+                    "close": close,
+                    "volume": 1_000_000 + day_index,
+                    "vwap": close,
+                    "year": date.year,
+                    "month": date.month,
+                    "transactions": 10_000 + day_index,
+                }
+            )
+    return pd.DataFrame(rows)

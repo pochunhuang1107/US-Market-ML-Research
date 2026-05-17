@@ -171,6 +171,8 @@ class SweepRunConfig:
     run_name: str = "sweep"
     resume: bool = True
     max_workers: int = 1
+    skipped_keys_path: Path | str | None = None
+    skip_no_usable_training_rows: bool = False
 
 
 @dataclass(frozen=True)
@@ -256,6 +258,7 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
     results_path = output_dir / f"{config.run_name}_results.csv"
     completed_path = output_dir / f"{config.run_name}_completed_keys.txt"
     failed_path = output_dir / f"{config.run_name}_failed_keys.txt"
+    skipped_path = Path(config.skipped_keys_path) if config.skipped_keys_path is not None else None
 
     if not config.resume:
         for path in (results_path, completed_path, failed_path):
@@ -264,15 +267,19 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
     _ensure_results_file(results_path)
     completed_path.touch(exist_ok=True)
     failed_path.touch(exist_ok=True)
+    if skipped_path is not None:
+        skipped_path.parent.mkdir(parents=True, exist_ok=True)
+        skipped_path.touch(exist_ok=True)
 
     completed_keys = _read_checkpoint_keys(completed_path) if config.resume else set()
+    skipped_keys = _read_checkpoint_keys(skipped_path) if skipped_path is not None else set()
     results_frames: list[pd.DataFrame] = []
     if config.resume and results_path.exists():
         existing_results = _read_results(results_path)
         if not existing_results.empty:
             results_frames.append(existing_results)
 
-    pending_tasks = _build_pending_tasks(config, completed_keys)
+    pending_tasks = _build_pending_tasks(config, completed_keys, skipped_keys)
     if config.max_workers > 1:
         return _run_sweep_parallel(
             config=config,
@@ -280,6 +287,7 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
             results_path=results_path,
             completed_path=completed_path,
             failed_path=failed_path,
+            skipped_path=skipped_path,
             completed_keys=completed_keys,
             results_frames=results_frames,
         )
@@ -305,6 +313,8 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
                             )
                             if config.resume and run_key in completed_keys:
                                 continue
+                            if run_key in skipped_keys:
+                                continue
 
                             try:
                                 run_rows = _run_one_configuration(
@@ -319,6 +329,10 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
                                     feature_set_version=feature_set_version,
                                 )
                             except Exception as exc:  # noqa: BLE001 - continue remaining sweep runs.
+                                if _should_skip_invalid_fold_exception(config, skipped_path, exc):
+                                    _append_skipped_key(skipped_path, run_key)
+                                    skipped_keys.add(run_key)
+                                    continue
                                 _append_failed_key(failed_path, run_key, exc)
                                 continue
 
@@ -337,7 +351,9 @@ def run_sweep(config: SweepRunConfig) -> pd.DataFrame:
 def _build_pending_tasks(
     config: SweepRunConfig,
     completed_keys: set[str],
+    skipped_keys: set[str] | None = None,
 ) -> list[_SweepTask]:
+    resolved_skipped_keys = skipped_keys if skipped_keys is not None else set()
     tasks: list[_SweepTask] = []
     for universe in config.universes:
         for fold_config in config.folds:
@@ -357,6 +373,8 @@ def _build_pending_tasks(
                                 feature_set_version=feature_set_version,
                             )
                             if config.resume and run_key in completed_keys:
+                                continue
+                            if run_key in resolved_skipped_keys:
                                 continue
                             tasks.append(
                                 _SweepTask(
@@ -379,6 +397,7 @@ def _run_sweep_parallel(
     results_path: Path,
     completed_path: Path,
     failed_path: Path,
+    skipped_path: Path | None,
     completed_keys: set[str],
     results_frames: list[pd.DataFrame],
 ) -> pd.DataFrame:
@@ -397,6 +416,9 @@ def _run_sweep_parallel(
                 try:
                     run_rows = future.result()
                 except Exception as exc:  # noqa: BLE001 - continue remaining sweep runs.
+                    if _should_skip_invalid_fold_exception(config, skipped_path, exc):
+                        _append_skipped_key(skipped_path, task.run_key)
+                        continue
                     _append_failed_key(failed_path, task.run_key, exc)
                     continue
 
@@ -791,9 +813,30 @@ def _append_failed_key(path: Path, run_key: str, exc: Exception) -> None:
     _append_line(path, f"{run_key}\t{type(exc).__name__}: {message}")
 
 
+def _append_skipped_key(path: Path | None, run_key: str) -> None:
+    if path is None:
+        return
+    existing = _read_checkpoint_keys(path)
+    if run_key not in existing:
+        _append_line(path, run_key)
+
+
 def _append_line(path: Path, line: str) -> None:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(f"{line}\n")
+
+
+def _should_skip_invalid_fold_exception(
+    config: SweepRunConfig,
+    skipped_path: Path | None,
+    exc: Exception,
+) -> bool:
+    if skipped_path is None or not config.skip_no_usable_training_rows:
+        return False
+    return (
+        isinstance(exc, ValueError)
+        and str(exc) == "No usable training rows remain after dropping missing model values."
+    )
 
 
 def _jsonable_dataclass(value: Any) -> dict[str, Any]:
