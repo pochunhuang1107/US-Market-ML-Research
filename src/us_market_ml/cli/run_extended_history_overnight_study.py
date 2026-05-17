@@ -12,15 +12,28 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from us_market_ml.data import (
+    SupervisedDatasetConfig,
+    build_supervised_dataset,
+    drop_rows_with_missing_model_values,
+    get_feature_columns,
+    read_local_market_data,
+)
 from us_market_ml.experiments import (
     SweepFoldConfig,
     SweepModelConfig,
     SweepRunConfig,
     SweepSignalConfig,
     SweepUniverseConfig,
+    build_sweep_run_key,
     run_sweep,
 )
-from us_market_ml.splits import WalkForwardFold, make_sliding_window_folds_for_train_windows
+from us_market_ml.splits import (
+    PurgeConfig,
+    WalkForwardFold,
+    make_sliding_window_folds_for_train_windows,
+    purge_fold_boundaries,
+)
 
 DEFAULT_DATASET_GLOB = (
     "/Users/casper/Projects/Research/Market Data/data/research/"
@@ -43,6 +56,28 @@ RANKING_NAME = "extended_history_candidate_rank.csv"
 FOLD_DETAILS_NAME = "extended_history_fold_details.csv"
 REGIME_NAME = "extended_history_regime_summary.csv"
 REPORT_NAME = "extended_history_report.md"
+INVALID_FOLD_REPORT_NAME = "extended_history_invalid_fold_report.csv"
+MIN_USABLE_TRAIN_ROWS = 1
+MIN_USABLE_TEST_ROWS = 1
+MIN_TRAIN_SYMBOL_COUNT = 1
+MIN_TEST_SYMBOL_COUNT = 1
+INVALID_FOLD_REPORT_COLUMNS = [
+    "key",
+    "fold_name",
+    "train_start",
+    "train_end",
+    "test_start",
+    "test_end",
+    "model_type",
+    "allocation_mode",
+    "top_k",
+    "transaction_cost_bps",
+    "reason",
+    "usable_train_rows",
+    "usable_test_rows",
+    "train_symbol_count",
+    "test_symbol_count",
+]
 
 
 @dataclass(frozen=True)
@@ -52,6 +87,17 @@ class ExtendedFold:
     fold: SweepFoldConfig
     study_design: str
     regime: str
+
+
+@dataclass(frozen=True)
+class ExtendedHistoryPreflight:
+    """Pre-dispatch validity outputs for the extended-history sweep."""
+
+    skipped_keys_path: Path
+    invalid_fold_report: Path
+    skipped_config_count: int
+    valid_config_count: int
+    total_config_count: int
 
 
 def run_extended_history_overnight_study_from_args(argv: list[str] | None = None) -> int:
@@ -70,14 +116,47 @@ def run_extended_history_overnight_study_from_args(argv: list[str] | None = None
         resume=args.resume,
         max_workers=args.max_workers,
     )
+    preflight = preflight_extended_history_invalid_folds(config=config)
+    config = SweepRunConfig(
+        universes=config.universes,
+        folds=config.folds,
+        models=config.models,
+        signals=config.signals,
+        target_col=config.target_col,
+        initial_equity=config.initial_equity,
+        prediction_col=config.prediction_col,
+        label_horizon_days=config.label_horizon_days,
+        feature_set_versions=config.feature_set_versions,
+        min_holding_days=config.min_holding_days,
+        switch_margin=config.switch_margin,
+        transaction_cost_bps_values=config.transaction_cost_bps_values,
+        output_dir=config.output_dir,
+        run_name=config.run_name,
+        resume=config.resume,
+        max_workers=config.max_workers,
+        skipped_keys_path=preflight.skipped_keys_path,
+        skip_no_usable_training_rows=True,
+    )
     fold_catalog = _write_fold_catalog(folds, args.output_dir)
 
     if args.dry_run:
-        _print_plan(config=config, folds=folds, fold_catalog=fold_catalog, dry_run=True)
+        _print_plan(
+            config=config,
+            folds=folds,
+            fold_catalog=fold_catalog,
+            preflight=preflight,
+            dry_run=True,
+        )
         return 0
 
     if not args.report_only:
-        _print_plan(config=config, folds=folds, fold_catalog=fold_catalog, dry_run=False)
+        _print_plan(
+            config=config,
+            folds=folds,
+            fold_catalog=fold_catalog,
+            preflight=preflight,
+            dry_run=False,
+        )
         run_sweep(config)
 
     outputs = build_extended_history_report(
@@ -269,7 +348,196 @@ def build_extended_history_sweep_config(
         run_name=run_name,
         resume=resume,
         max_workers=max_workers,
+        skipped_keys_path=output_dir / f"{run_name}_skipped_keys.txt",
+        skip_no_usable_training_rows=True,
     )
+
+
+def preflight_extended_history_invalid_folds(
+    *,
+    config: SweepRunConfig,
+) -> ExtendedHistoryPreflight:
+    """Write skipped extended-history configs that cannot fit a model."""
+
+    output_dir = Path(config.output_dir)
+    skipped_keys_path = output_dir / f"{config.run_name}_skipped_keys.txt"
+    invalid_fold_report = output_dir / INVALID_FOLD_REPORT_NAME
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    total_config_count = _independent_config_count(config)
+    invalid_rows = _build_invalid_fold_report_rows(config)
+    invalid_keys = {str(row["key"]) for row in invalid_rows}
+    existing_skipped = _read_key_checkpoint(skipped_keys_path) if config.resume else set()
+    skipped_keys = sorted(existing_skipped.union(invalid_keys))
+
+    skipped_keys_path.write_text(
+        "".join(f"{key}\n" for key in skipped_keys),
+        encoding="utf-8",
+    )
+    pd.DataFrame(invalid_rows, columns=INVALID_FOLD_REPORT_COLUMNS).to_csv(
+        invalid_fold_report,
+        index=False,
+    )
+    return ExtendedHistoryPreflight(
+        skipped_keys_path=skipped_keys_path,
+        invalid_fold_report=invalid_fold_report,
+        skipped_config_count=len(skipped_keys),
+        valid_config_count=max(total_config_count - len(skipped_keys), 0),
+        total_config_count=total_config_count,
+    )
+
+
+def _build_invalid_fold_report_rows(config: SweepRunConfig) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    validity = _estimate_fold_validity(config)
+    for universe in config.universes:
+        for fold_config in config.folds:
+            for model_config in config.models:
+                for signal_config in config.signals:
+                    for feature_set_version in config.feature_set_versions:
+                        fold_validity = validity[
+                            (str(universe.data_path), fold_config.name, feature_set_version)
+                        ]
+                        for transaction_cost_bps in config.transaction_cost_bps_values:
+                            reason = _invalid_fold_reason(
+                                usable_train_rows=fold_validity["usable_train_rows"],
+                                usable_test_rows=fold_validity["usable_test_rows"],
+                                train_symbol_count=fold_validity["train_symbol_count"],
+                                test_symbol_count=fold_validity["test_symbol_count"],
+                            )
+                            if reason is None:
+                                continue
+                            run_key = build_sweep_run_key(
+                                universe=universe,
+                                fold=fold_config,
+                                model=model_config,
+                                signal=signal_config,
+                                label_horizon_days=config.label_horizon_days,
+                                min_holding_days=config.min_holding_days,
+                                switch_margin=config.switch_margin,
+                                transaction_cost_bps=transaction_cost_bps,
+                                feature_set_version=feature_set_version,
+                            )
+                            rows.append(
+                                {
+                                    "key": run_key,
+                                    "fold_name": fold_config.name,
+                                    "train_start": fold_config.train_start,
+                                    "train_end": fold_config.train_end,
+                                    "test_start": fold_config.test_start,
+                                    "test_end": fold_config.test_end,
+                                    "model_type": model_config.model_type,
+                                    "allocation_mode": signal_config.allocation_mode,
+                                    "top_k": signal_config.top_k,
+                                    "transaction_cost_bps": transaction_cost_bps,
+                                    "reason": reason,
+                                    "usable_train_rows": fold_validity["usable_train_rows"],
+                                    "usable_test_rows": fold_validity["usable_test_rows"],
+                                    "train_symbol_count": fold_validity["train_symbol_count"],
+                                    "test_symbol_count": fold_validity["test_symbol_count"],
+                                }
+                            )
+    return rows
+
+
+def _estimate_fold_validity(config: SweepRunConfig) -> dict[tuple[str, str, str], dict[str, int]]:
+    estimates: dict[tuple[str, str, str], dict[str, int]] = {}
+    for universe in config.universes:
+        raw_df = read_local_market_data(universe.data_path)
+        for feature_set_version in config.feature_set_versions:
+            dataset = build_supervised_dataset(
+                raw_df,
+                SupervisedDatasetConfig(feature_set_version=feature_set_version),
+            )
+            feature_cols = get_feature_columns(dataset, feature_set_version=feature_set_version)
+            if config.target_col not in dataset.columns:
+                raise ValueError(
+                    "Configured target_col is missing after supervised dataset construction: "
+                    f"{config.target_col}"
+                )
+            for fold_config in config.folds:
+                fold = WalkForwardFold(
+                    name=fold_config.name,
+                    train_start=pd.Timestamp(fold_config.train_start),
+                    train_end=pd.Timestamp(fold_config.train_end),
+                    validation_start=pd.Timestamp(fold_config.validation_start),
+                    validation_end=pd.Timestamp(fold_config.validation_end),
+                    test_start=pd.Timestamp(fold_config.test_start),
+                    test_end=pd.Timestamp(fold_config.test_end),
+                )
+                train_df, _, test_df = _split_for_preflight(dataset, fold, config)
+                usable_train = drop_rows_with_missing_model_values(
+                    train_df,
+                    feature_cols,
+                    config.target_col,
+                )
+                usable_test = drop_rows_with_missing_model_values(
+                    test_df,
+                    feature_cols,
+                    config.target_col,
+                )
+                estimates[(str(universe.data_path), fold_config.name, feature_set_version)] = {
+                    "usable_train_rows": int(len(usable_train)),
+                    "usable_test_rows": int(len(usable_test)),
+                    "train_symbol_count": _symbol_count(usable_train),
+                    "test_symbol_count": _symbol_count(usable_test),
+                }
+    return estimates
+
+
+def _split_for_preflight(
+    dataset: pd.DataFrame,
+    fold: WalkForwardFold,
+    config: SweepRunConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if config.label_horizon_days <= 0:
+        return fold.split(dataset)
+    return purge_fold_boundaries(
+        dataset,
+        fold,
+        PurgeConfig(label_horizon_days=config.label_horizon_days),
+    )
+
+
+def _invalid_fold_reason(
+    *,
+    usable_train_rows: int,
+    usable_test_rows: int,
+    train_symbol_count: int,
+    test_symbol_count: int,
+) -> str | None:
+    if usable_train_rows < MIN_USABLE_TRAIN_ROWS:
+        return "skipped_invalid_fold: insufficient_usable_train_rows"
+    if usable_test_rows < MIN_USABLE_TEST_ROWS:
+        return "skipped_invalid_fold: insufficient_usable_test_rows"
+    if train_symbol_count < MIN_TRAIN_SYMBOL_COUNT:
+        return "skipped_invalid_fold: insufficient_train_symbol_count"
+    if test_symbol_count < MIN_TEST_SYMBOL_COUNT:
+        return "skipped_invalid_fold: insufficient_test_symbol_count"
+    return None
+
+
+def _symbol_count(df: pd.DataFrame) -> int:
+    if "symbol" not in df.columns or df.empty:
+        return 0
+    return int(df["symbol"].dropna().nunique())
+
+
+def _independent_config_count(config: SweepRunConfig) -> int:
+    return (
+        len(config.universes)
+        * len(config.folds)
+        * len(config.models)
+        * len(config.signals)
+        * len(config.feature_set_versions)
+        * len(config.transaction_cost_bps_values)
+    )
+
+
+def _read_key_checkpoint(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    return {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
 
 
 def build_extended_history_report(
@@ -525,17 +793,11 @@ def _print_plan(
     config: SweepRunConfig,
     folds: Sequence[ExtendedFold],
     fold_catalog: Path,
+    preflight: ExtendedHistoryPreflight,
     dry_run: bool,
 ) -> None:
     output_dir = Path(config.output_dir)
-    independent_configs = (
-        len(config.universes)
-        * len(config.folds)
-        * len(config.models)
-        * len(config.signals)
-        * len(config.feature_set_versions)
-        * len(config.transaction_cost_bps_values)
-    )
+    independent_configs = preflight.total_config_count
     print("US Market ML extended-history overnight study")
     print("local-only: true")
     print("uses S3: false")
@@ -547,11 +809,15 @@ def _print_plan(
     print(f"results CSV: {output_dir / f'{config.run_name}_results.csv'}")
     print(f"completed checkpoint: {output_dir / f'{config.run_name}_completed_keys.txt'}")
     print(f"failed checkpoint: {output_dir / f'{config.run_name}_failed_keys.txt'}")
+    print(f"skipped checkpoint: {preflight.skipped_keys_path}")
+    print(f"invalid fold report: {preflight.invalid_fold_report}")
     print(f"fold catalog: {fold_catalog}")
     print(f"fold count: {len(folds)}")
     print(f"signal count: {len(config.signals)}")
     print(f"transaction costs: {config.transaction_cost_bps_values}")
     print(f"estimated independent configs: {independent_configs}")
+    print(f"estimated valid configs: {preflight.valid_config_count}")
+    print(f"estimated skipped invalid configs: {preflight.skipped_config_count}")
     print(f"max workers: {config.max_workers}")
     print(f"resume: {config.resume}")
     print()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -492,6 +493,75 @@ def test_run_sweep_records_failed_run_and_continues(tmp_path: Path) -> None:
     run_key, error = failed_lines[0].split("\t", maxsplit=1)
     assert "not_a_model" in run_key
     assert "ValueError:" in error
+
+
+def test_run_sweep_classifies_no_usable_training_rows_as_skipped_invalid_fold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    skipped_path = tmp_path / "sweeps" / "skip_case_skipped_keys.txt"
+    config = replace(
+        _baseline_config(tmp_path, data_path, run_name="skip_case"),
+        skipped_keys_path=skipped_path,
+        skip_no_usable_training_rows=True,
+    )
+
+    def raise_no_usable_rows(*args: object, **kwargs: object) -> pd.DataFrame:
+        raise ValueError("No usable training rows remain after dropping missing model values.")
+
+    monkeypatch.setattr(
+        "us_market_ml.experiments.sweep_runner._run_baseline",
+        raise_no_usable_rows,
+    )
+
+    results = run_sweep(config)
+
+    failed_path = tmp_path / "sweeps" / "skip_case_failed_keys.txt"
+    assert results.empty
+    assert failed_path.read_text(encoding="utf-8") == ""
+    skipped_lines = skipped_path.read_text(encoding="utf-8").splitlines()
+    assert len(skipped_lines) == 1
+    assert "fold-fold-1" in skipped_lines[0]
+
+
+def test_run_sweep_respects_skipped_checkpoint_on_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_path = tmp_path / "etf_daily.csv"
+    _write_csv(data_path)
+    base_config = _baseline_config(tmp_path, data_path, run_name="resume_skip")
+    skipped_path = tmp_path / "sweeps" / "resume_skip_skipped_keys.txt"
+    run_key = build_sweep_run_key(
+        universe=base_config.universes[0],
+        fold=base_config.folds[0],
+        model=base_config.models[0],
+        signal=base_config.signals[0],
+        label_horizon_days=base_config.label_horizon_days,
+        min_holding_days=base_config.min_holding_days,
+        switch_margin=base_config.switch_margin,
+        transaction_cost_bps=base_config.transaction_cost_bps_values[0],
+        feature_set_version=base_config.feature_set_versions[0],
+    )
+    skipped_path.parent.mkdir(parents=True)
+    skipped_path.write_text(f"{run_key}\n", encoding="utf-8")
+    config = replace(base_config, skipped_keys_path=skipped_path)
+
+    def fail_if_called(*args: object, **kwargs: object) -> object:
+        raise AssertionError("skipped run should not have been dispatched")
+
+    monkeypatch.setattr(
+        "us_market_ml.experiments.sweep_runner.run_baseline_e2e_experiment",
+        fail_if_called,
+    )
+
+    results = run_sweep(config)
+
+    assert results.empty
+    assert (tmp_path / "sweeps" / "resume_skip_failed_keys.txt").read_text() == ""
+    assert skipped_path.read_text(encoding="utf-8").splitlines() == [run_key]
 
 
 def test_run_sweep_parallel_writes_results_and_checkpoints_safely(
