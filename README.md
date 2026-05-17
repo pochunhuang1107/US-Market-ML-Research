@@ -780,6 +780,38 @@ Each run writes `{run_name}_results.csv`,
 selected output directory. Resume is enabled by default; pass `--no-resume` to
 rerun all requested configurations.
 
+## Extended-History Overnight Study
+
+The local extended-history runner retests the current champion family
+(`linear_smooth10_margin002_v1`) against the Tiingo split-adjusted + Massive
+ETF history exported by the Market Data repo. It is local-only: it uses a
+quoted parquet glob, does not read S3, does not create AWS/Lambda logic, and
+does not run neural-network/GPU work.
+
+```bash
+DRY_RUN=1 MAX_WORKERS=4 bash scripts/run_extended_history_overnight_study.sh
+
+caffeinate -is env MAX_WORKERS=4 bash scripts/run_extended_history_overnight_study.sh
+```
+
+The default dataset glob can be overridden without changing production paths:
+
+```bash
+MARKET_DATASET_GLOB="/path/with spaces/**/*.parquet" \
+  MAX_WORKERS=4 \
+  bash scripts/run_extended_history_overnight_study.sh
+```
+
+Outputs are written under
+`artifacts/sweeps/extended_history_overnight_study/`, including the sweep CSV,
+completed/failed checkpoints, terminal log, fold catalog,
+`extended_history_candidate_rank.csv`, `extended_history_regime_summary.csv`,
+and `extended_history_report.md`. The study combines fixed regime folds for
+dot-com, 2008, 2020, 2022, and current periods with annual 5-year and 10-year
+rolling longer-history folds. Allocation variants include top-1, top-3/top-5
+equal weight, score-weighted, softmax score-weighted, and capped
+score-weighted modes.
+
 ## Allocation Study Report
 
 After the focused allocation sweeps complete, the allocation study report reads

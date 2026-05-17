@@ -78,6 +78,20 @@ def test_read_directory_with_multiple_parquet_files(tmp_path) -> None:
     assert result["symbol"].tolist() == ["QQQ", "SPY"]
 
 
+def test_read_parquet_glob_with_spaces_in_path(tmp_path) -> None:
+    data_dir = tmp_path / "Market Data" / "year=2024"
+    data_dir.mkdir(parents=True)
+    first = data_dir / "part-1.parquet"
+    second = data_dir / "part-2.parquet"
+    _sample_ohlcv().iloc[[0]].to_parquet(first, index=False)
+    _sample_ohlcv().iloc[[1]].to_parquet(second, index=False)
+
+    result = read_local_market_data(str(tmp_path / "Market Data" / "**" / "*.parquet"))
+
+    assert len(result) == 2
+    assert result["symbol"].tolist() == ["QQQ", "SPY"]
+
+
 def test_directory_falls_back_to_csv_when_no_parquet_files_exist(tmp_path) -> None:
     nested = tmp_path / "nested"
     nested.mkdir()
@@ -181,6 +195,11 @@ def test_unsupported_extension_raises_value_error(tmp_path) -> None:
 def test_missing_path_raises_file_not_found_error(tmp_path) -> None:
     with pytest.raises(FileNotFoundError):
         read_local_market_data(tmp_path / "missing.parquet")
+
+
+def test_unmatched_glob_raises_file_not_found_error(tmp_path) -> None:
+    with pytest.raises(FileNotFoundError, match="glob matched no files"):
+        read_local_market_data(str(tmp_path / "**" / "*.parquet"))
 
 
 def test_empty_directory_raises_value_error(tmp_path) -> None:

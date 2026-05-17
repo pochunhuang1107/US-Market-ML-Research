@@ -74,6 +74,9 @@ RESULT_COLUMNS = [
     "sharpe_like",
     "max_drawdown",
     "final_equity",
+    "total_transaction_cost",
+    "mean_daily_turnover",
+    "max_daily_turnover",
     "epochs_trained",
 ]
 
@@ -623,6 +626,9 @@ def _run_one_configuration(
                 "sharpe_like": summary_row["sharpe_like"],
                 "max_drawdown": summary_row["max_drawdown"],
                 "final_equity": summary_row["final_equity"],
+                "total_transaction_cost": summary_row.get("total_transaction_cost", np.nan),
+                "mean_daily_turnover": summary_row.get("mean_daily_turnover", np.nan),
+                "max_daily_turnover": summary_row.get("max_daily_turnover", np.nan),
                 "epochs_trained": summary_row.get("epochs_trained", np.nan),
             }
         )
