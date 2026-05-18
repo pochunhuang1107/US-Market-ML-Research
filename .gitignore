@@ -26,3 +26,4 @@ scripts/*_with_progress.sh
 !scripts/run_tiingo_modern_baseline_sweep.sh
 !scripts/run_tiingo_focused_linear_ridge_confirmation.sh
 !scripts/run_tiingo_selected_candidate_rich_replay.sh
+!scripts/run_tiingo_benchmark_gap_feature_study.sh

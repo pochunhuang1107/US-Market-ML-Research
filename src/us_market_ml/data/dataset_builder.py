@@ -18,8 +18,11 @@ import pandas as pd
 from pandas.api.types import is_bool_dtype, is_numeric_dtype
 
 from us_market_ml.features import (
+    BENCHMARK_GAP_FEATURE_COLUMNS,
+    BENCHMARK_GAP_FEATURE_SET_VERSION,
     DEFAULT_FEATURE_SET_VERSION,
     FeatureSetConfig,
+    TECHNICAL_FEATURE_SET_VERSION,
     build_feature_frame,
     validate_feature_set_version,
 )
@@ -171,8 +174,10 @@ def get_feature_columns(
     validate_feature_set_version(feature_set_version)
     excluded_columns = get_default_non_feature_columns()
     excluded_columns.update(get_target_columns(df))
-    if feature_set_version == DEFAULT_FEATURE_SET_VERSION:
+    if feature_set_version in {DEFAULT_FEATURE_SET_VERSION, BENCHMARK_GAP_FEATURE_SET_VERSION}:
         excluded_columns.update(TECHNICAL_FEATURES_V2_ONLY)
+    if feature_set_version in {DEFAULT_FEATURE_SET_VERSION, TECHNICAL_FEATURE_SET_VERSION}:
+        excluded_columns.update(BENCHMARK_GAP_FEATURE_COLUMNS)
     if extra_exclude is not None:
         excluded_columns.update(extra_exclude)
 
