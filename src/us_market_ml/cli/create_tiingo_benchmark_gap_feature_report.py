@@ -23,6 +23,7 @@ from us_market_ml.cli.create_tiingo_modern_baseline_sweep_report import (
 )
 from us_market_ml.cli.run_tiingo_benchmark_gap_feature_study import (
     BENCHMARK_GAP_FEATURE_SET_VERSION,
+    BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
     DEFAULT_DATASET_GLOB,
     DEFAULT_FEATURE_SET_VERSION,
 )
@@ -41,6 +42,12 @@ OUTPUT_PATH_NAMES = (SUMMARY_PATH_NAME, DECISION_MATRIX_PATH_NAME, REPORT_PATH_N
 
 BENCHMARK_SYMBOLS = ("SPY", "QQQ")
 SELECTED_CANDIDATE_ROLE = "selected_candidate"
+COMPARISON_FEATURE_SET_VERSIONS = (
+    DEFAULT_FEATURE_SET_VERSION,
+    BENCHMARK_GAP_FEATURE_SET_VERSION,
+    BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
+)
+DRAWDOWN_SEVERE_WORSENING_THRESHOLD = -0.05
 
 SUMMARY_GROUP_COLUMNS = [
     "dataset_source",
@@ -83,7 +90,12 @@ SUMMARY_COLUMNS = [
     "delta_average_return_vs_default",
     "delta_strategy_vs_spy_vs_default",
     "delta_strategy_vs_qqq_vs_default",
+    "delta_average_return_vs_benchmark_gap_v1",
+    "delta_strategy_vs_spy_vs_benchmark_gap_v1",
+    "delta_strategy_vs_qqq_vs_benchmark_gap_v1",
+    "delta_worst_max_drawdown_vs_benchmark_gap_v1",
     "benchmark_gap_change",
+    "benchmark_gap_change_vs_benchmark_gap_v1",
     "benchmark_status",
 ]
 
@@ -120,7 +132,12 @@ DECISION_MATRIX_COLUMNS = [
     "delta_average_return_vs_default",
     "delta_strategy_vs_spy_vs_default",
     "delta_strategy_vs_qqq_vs_default",
+    "delta_average_return_vs_benchmark_gap_v1",
+    "delta_strategy_vs_spy_vs_benchmark_gap_v1",
+    "delta_strategy_vs_qqq_vs_benchmark_gap_v1",
+    "delta_worst_max_drawdown_vs_benchmark_gap_v1",
     "benchmark_gap_change",
+    "benchmark_gap_change_vs_benchmark_gap_v1",
     "benchmark_status",
     "feature_decision",
     "next_action",
@@ -205,14 +222,16 @@ def build_tiingo_benchmark_gap_feature_report(
         enriched["model_family"].astype(str).eq("baseline")
         & enriched["feature_set_version"]
         .astype(str)
-        .isin({DEFAULT_FEATURE_SET_VERSION, BENCHMARK_GAP_FEATURE_SET_VERSION})
+        .isin(COMPARISON_FEATURE_SET_VERSIONS)
     ].copy()
     if included.empty:
         raise ValueError(
             "No default/benchmark-gap baseline test rows were found in the results CSV."
         )
 
-    feature_summary = _sort_summary(_add_default_deltas(_aggregate(included, SUMMARY_GROUP_COLUMNS)))
+    feature_summary = _sort_summary(
+        _add_default_deltas(_aggregate(included, SUMMARY_GROUP_COLUMNS))
+    )
     decision_matrix = _sort_decision_matrix(
         _add_decision_columns(
             _add_default_deltas(_aggregate(included, DECISION_GROUP_COLUMNS))
@@ -272,13 +291,24 @@ def render_tiingo_benchmark_gap_feature_markdown(
                 "qqq_underperformance_rate",
                 "delta_strategy_vs_spy_vs_default",
                 "delta_strategy_vs_qqq_vs_default",
+                "delta_strategy_vs_spy_vs_benchmark_gap_v1",
+                "delta_strategy_vs_qqq_vs_benchmark_gap_v1",
+                "delta_worst_max_drawdown_vs_benchmark_gap_v1",
                 "benchmark_gap_change",
+                "benchmark_gap_change_vs_benchmark_gap_v1",
                 "benchmark_status",
             ]
         ],
-        exclude={"feature_set_version", "benchmark_gap_change", "benchmark_status"},
+        exclude={
+            "feature_set_version",
+            "benchmark_gap_change",
+            "benchmark_gap_change_vs_benchmark_gap_v1",
+            "benchmark_status",
+        },
     )
-    benchmark_candidate = _feature_row(selected_rows, BENCHMARK_GAP_FEATURE_SET_VERSION)
+    v1_candidate = _feature_row(selected_rows, BENCHMARK_GAP_FEATURE_SET_VERSION)
+    v2_candidate = _feature_row(selected_rows, BENCHMARK_GAP_V2_FEATURE_SET_VERSION)
+    benchmark_candidate = v2_candidate if v2_candidate is not None else v1_candidate
     default_candidate = _feature_row(selected_rows, DEFAULT_FEATURE_SET_VERSION)
     status = (
         str(benchmark_candidate.get("benchmark_status", "unknown"))
@@ -286,7 +316,14 @@ def render_tiingo_benchmark_gap_feature_markdown(
         else "benchmark-gap feature row missing"
     )
     gap_change = (
-        str(benchmark_candidate.get("benchmark_gap_change", "unknown"))
+        str(
+            benchmark_candidate.get(
+                "benchmark_gap_change_vs_benchmark_gap_v1"
+                if v2_candidate is not None
+                else "benchmark_gap_change",
+                "unknown",
+            )
+        )
         if benchmark_candidate is not None
         else "unknown"
     )
@@ -299,6 +336,9 @@ def render_tiingo_benchmark_gap_feature_markdown(
         _fmt(benchmark_candidate["average_total_return"])
         if benchmark_candidate is not None
         else "nan"
+    )
+    v1_return = (
+        _fmt(v1_candidate["average_total_return"]) if v1_candidate is not None else "nan"
     )
 
     reference_rows = decision.loc[
@@ -314,6 +354,7 @@ def render_tiingo_benchmark_gap_feature_markdown(
                 "average_strategy_vs_spy",
                 "average_strategy_vs_qqq",
                 "benchmark_gap_change",
+                "benchmark_gap_change_vs_benchmark_gap_v1",
                 "feature_decision",
             ]
         ].head(30),
@@ -322,6 +363,7 @@ def render_tiingo_benchmark_gap_feature_markdown(
             "feature_set_version",
             "candidate_label",
             "benchmark_gap_change",
+            "benchmark_gap_change_vs_benchmark_gap_v1",
             "feature_decision",
         },
     )
@@ -331,17 +373,18 @@ def render_tiingo_benchmark_gap_feature_markdown(
         "",
         "## Executive Summary",
         "",
-        "This report compares `default_features_v1` against "
-        "`benchmark_gap_features_v1` for the current selected Tiingo-only ridge "
-        "top5 candidate. The study is local-only, baseline-only, and intentionally "
-        "excludes tree models, MLPs, S3, and production signal export.",
+        "This report compares `default_features_v1`, `benchmark_gap_features_v1`, "
+        "and `benchmark_gap_features_v2` for the current selected Tiingo-only "
+        "ridge top5 candidate. The study is local-only, baseline-only, and "
+        "intentionally excludes tree models, MLPs, S3, and production signal export.",
         "",
         f"Input result rows: `{report_data.result_row_count}`. Test rows: "
         f"`{report_data.test_row_count}`. Included feature-study test rows: "
         f"`{report_data.included_test_row_count}`.",
         "",
-        f"Selected default average return: `{default_return}`. Selected benchmark-gap "
-        f"average return: `{feature_return}`.",
+        f"Selected default average return: `{default_return}`. Selected v1 average "
+        f"return: `{v1_return}`. Selected latest benchmark-gap average return: "
+        f"`{feature_return}`.",
         "",
         f"Benchmark-gap feature verdict: `{gap_change}`. Benchmark status: `{status}`.",
         "",
@@ -363,7 +406,10 @@ def render_tiingo_benchmark_gap_feature_markdown(
                         "worst_max_drawdown",
                         "average_strategy_vs_spy",
                         "average_strategy_vs_qqq",
+                        "delta_strategy_vs_spy_vs_benchmark_gap_v1",
+                        "delta_strategy_vs_qqq_vs_benchmark_gap_v1",
                         "benchmark_gap_change",
+                        "benchmark_gap_change_vs_benchmark_gap_v1",
                         "benchmark_status",
                         "feature_decision",
                         "next_action",
@@ -373,6 +419,7 @@ def render_tiingo_benchmark_gap_feature_markdown(
                     "candidate_label",
                     "feature_set_version",
                     "benchmark_gap_change",
+                    "benchmark_gap_change_vs_benchmark_gap_v1",
                     "benchmark_status",
                     "feature_decision",
                     "next_action",
@@ -588,19 +635,26 @@ def _aggregate(test_rows: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
         row["benchmark_status"] = _benchmark_status(row)
         rows.append(row)
     columns = SUMMARY_COLUMNS if group_cols == SUMMARY_GROUP_COLUMNS else DECISION_MATRIX_COLUMNS
-    return pd.DataFrame(rows).reindex(columns=[column for column in columns if column in rows[0]] if rows else columns)
+    selected_columns = [column for column in columns if column in rows[0]] if rows else columns
+    return pd.DataFrame(rows).reindex(columns=selected_columns)
 
 
 def _add_default_deltas(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         return frame
     output = frame.copy()
-    metric_map = {
+    default_metric_map = {
         "average_total_return": "delta_average_return_vs_default",
         "average_strategy_vs_spy": "delta_strategy_vs_spy_vs_default",
         "average_strategy_vs_qqq": "delta_strategy_vs_qqq_vs_default",
     }
-    for output_column in metric_map.values():
+    v1_metric_map = {
+        "average_total_return": "delta_average_return_vs_benchmark_gap_v1",
+        "average_strategy_vs_spy": "delta_strategy_vs_spy_vs_benchmark_gap_v1",
+        "average_strategy_vs_qqq": "delta_strategy_vs_qqq_vs_benchmark_gap_v1",
+        "worst_max_drawdown": "delta_worst_max_drawdown_vs_benchmark_gap_v1",
+    }
+    for output_column in [*default_metric_map.values(), *v1_metric_map.values()]:
         output[output_column] = np.nan
 
     default_lookup = {
@@ -609,15 +663,30 @@ def _add_default_deltas(frame: pd.DataFrame) -> pd.DataFrame:
             output["feature_set_version"].astype(str).eq(DEFAULT_FEATURE_SET_VERSION)
         ].itertuples(index=False)
     }
+    v1_lookup = {
+        _default_comparison_key(pd.Series(row._asdict())): row
+        for row in output.loc[
+            output["feature_set_version"].astype(str).eq(BENCHMARK_GAP_FEATURE_SET_VERSION)
+        ].itertuples(index=False)
+    }
     for index, row in output.iterrows():
         default_row = default_lookup.get(_default_comparison_key(row))
-        if default_row is None:
-            continue
-        for metric_column, output_column in metric_map.items():
-            output.at[index, output_column] = (
-                _as_float(row[metric_column]) - _as_float(getattr(default_row, metric_column))
-            )
+        if default_row is not None:
+            for metric_column, output_column in default_metric_map.items():
+                output.at[index, output_column] = _as_float(row[metric_column]) - _as_float(
+                    getattr(default_row, metric_column)
+                )
+        v1_row = v1_lookup.get(_default_comparison_key(row))
+        if v1_row is not None:
+            for metric_column, output_column in v1_metric_map.items():
+                output.at[index, output_column] = _as_float(row[metric_column]) - _as_float(
+                    getattr(v1_row, metric_column)
+                )
     output["benchmark_gap_change"] = output.apply(_benchmark_gap_change, axis=1)
+    output["benchmark_gap_change_vs_benchmark_gap_v1"] = output.apply(
+        _benchmark_gap_change_vs_v1,
+        axis=1,
+    )
     return output
 
 
@@ -653,6 +722,23 @@ def _benchmark_gap_change(row: pd.Series) -> str:
     return "not improved"
 
 
+def _benchmark_gap_change_vs_v1(row: pd.Series) -> str:
+    feature_set_version = str(row["feature_set_version"])
+    if feature_set_version == DEFAULT_FEATURE_SET_VERSION:
+        return "baseline comparator"
+    if feature_set_version == BENCHMARK_GAP_FEATURE_SET_VERSION:
+        return "v1 comparator"
+    spy_delta = _as_float(row.get("delta_strategy_vs_spy_vs_benchmark_gap_v1"))
+    qqq_delta = _as_float(row.get("delta_strategy_vs_qqq_vs_benchmark_gap_v1"))
+    if pd.isna(spy_delta) or pd.isna(qqq_delta):
+        return "unknown"
+    if spy_delta > 0.0 and qqq_delta > 0.0:
+        return "improved versus v1 SPY and QQQ gaps"
+    if spy_delta > 0.0 or qqq_delta > 0.0:
+        return "mixed versus v1"
+    return "not improved versus v1"
+
+
 def _benchmark_status(row: pd.Series | dict[str, object]) -> str:
     vs_spy = _as_float(row["average_strategy_vs_spy"])
     vs_qqq = _as_float(row["average_strategy_vs_qqq"])
@@ -668,15 +754,27 @@ def _benchmark_status(row: pd.Series | dict[str, object]) -> str:
 
 
 def _feature_decision(row: pd.Series) -> str:
-    if str(row["feature_set_version"]) == DEFAULT_FEATURE_SET_VERSION:
+    feature_set_version = str(row["feature_set_version"])
+    if feature_set_version == DEFAULT_FEATURE_SET_VERSION:
         return "current baseline comparator"
     if str(row["candidate_role"]) != SELECTED_CANDIDATE_ROLE:
         return "reference only"
+    if feature_set_version == BENCHMARK_GAP_V2_FEATURE_SET_VERSION:
+        spy_delta = _as_float(row.get("delta_strategy_vs_spy_vs_benchmark_gap_v1"))
+        qqq_delta = _as_float(row.get("delta_strategy_vs_qqq_vs_benchmark_gap_v1"))
+        drawdown_delta = _as_float(row.get("delta_worst_max_drawdown_vs_benchmark_gap_v1"))
+        if qqq_delta > 0.0 and drawdown_delta <= DRAWDOWN_SEVERE_WORSENING_THRESHOLD:
+            return "mixed; QQQ gap improved but drawdown worsened"
+        if spy_delta > 0.0 and qqq_delta > 0.0:
+            return "keep v2 for next feature-engineering iteration"
+        if spy_delta > 0.0 or qqq_delta > 0.0:
+            return "mixed; inspect v2 window drivers"
+        return "reject/deprioritize v2"
     gap_change = str(row["benchmark_gap_change"])
     status = str(row["benchmark_status"])
     if gap_change == "improved versus SPY and QQQ":
         if status == "strategy beats SPY and QQQ on average":
-            return "promote for deeper validation"
+            return "keep feature set for deeper validation"
         return "keep feature set for next feature-engineering iteration"
     if gap_change == "mixed":
         return "inconclusive; inspect window drivers"
@@ -685,10 +783,18 @@ def _feature_decision(row: pd.Series) -> str:
 
 def _next_action(row: pd.Series) -> str:
     decision = str(row.get("feature_decision", ""))
-    if decision == "promote for deeper validation":
+    if decision == "keep feature set for deeper validation":
         return "run richer replay before any promotion"
     if decision == "keep feature set for next feature-engineering iteration":
         return "continue benchmark-gap feature engineering"
+    if decision == "keep v2 for next feature-engineering iteration":
+        return "keep v2 in the feature-engineering queue; no production promotion"
+    if decision == "mixed; QQQ gap improved but drawdown worsened":
+        return "inspect drawdown-heavy folds before keeping v2"
+    if decision == "mixed; inspect v2 window drivers":
+        return "inspect fold-level winners and losers versus v1"
+    if decision == "reject/deprioritize v2":
+        return "deprioritize v2 unless fold diagnostics reveal a targeted fix"
     if decision == "inconclusive; inspect window drivers":
         return "inspect fold-level winners and losers"
     if decision == "reference only":
@@ -699,9 +805,12 @@ def _next_action(row: pd.Series) -> str:
 def _rationale(row: pd.Series) -> str:
     return (
         f"gap_change={row['benchmark_gap_change']}; status={row['benchmark_status']}; "
+        f"gap_change_vs_v1={row['benchmark_gap_change_vs_benchmark_gap_v1']}; "
         f"avg_return={_fmt(row['average_total_return'])}; "
         f"vs_spy={_fmt(row['average_strategy_vs_spy'])}; "
         f"vs_qqq={_fmt(row['average_strategy_vs_qqq'])}; "
+        f"delta_v1_spy={_fmt(row['delta_strategy_vs_spy_vs_benchmark_gap_v1'])}; "
+        f"delta_v1_qqq={_fmt(row['delta_strategy_vs_qqq_vs_benchmark_gap_v1'])}; "
         f"spy_under={_fmt(row['spy_underperformance_rate'])}; "
         f"qqq_under={_fmt(row['qqq_underperformance_rate'])}"
     )
@@ -729,8 +838,9 @@ def _sort_summary(summary: pd.DataFrame) -> pd.DataFrame:
 def _sort_decision_matrix(decision_matrix: pd.DataFrame) -> pd.DataFrame:
     output = decision_matrix.reindex(columns=DECISION_MATRIX_COLUMNS)
     feature_order = {
-        BENCHMARK_GAP_FEATURE_SET_VERSION: 0,
-        DEFAULT_FEATURE_SET_VERSION: 1,
+        DEFAULT_FEATURE_SET_VERSION: 0,
+        BENCHMARK_GAP_FEATURE_SET_VERSION: 1,
+        BENCHMARK_GAP_V2_FEATURE_SET_VERSION: 2,
     }
     output["_feature_order"] = output["feature_set_version"].map(feature_order).fillna(9)
     return output.sort_values(

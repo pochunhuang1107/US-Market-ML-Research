@@ -189,6 +189,8 @@ main() {
   RESUME="${RESUME:-1}"
   DRY_RUN="${DRY_RUN:-0}"
   CREATE_REPORT="${CREATE_REPORT:-1}"
+  REPORT_MODULE="${REPORT_MODULE:-us_market_ml.cli.create_tiingo_benchmark_gap_feature_report}"
+  REPORT_OUTPUT_DIR="${REPORT_OUTPUT_DIR:-$OUTPUT_DIR}"
   INCLUDE_REFERENCE_CANDIDATES="${INCLUDE_REFERENCE_CANDIDATES:-1}"
   MIN_HISTORY_ROWS="${MIN_HISTORY_ROWS:-252}"
   MIN_TRAIN_ELIGIBLE_ROWS="${MIN_TRAIN_ELIGIBLE_ROWS:-5000}"
@@ -372,10 +374,10 @@ main() {
 
   if [[ "$CREATE_REPORT" != "0" ]]; then
     printf '\nCreating benchmark-gap feature report...\n'
-    python -m us_market_ml.cli.create_tiingo_benchmark_gap_feature_report \
+    python -m "$REPORT_MODULE" \
       --results-csv "$results_csv" \
       --market-dataset-glob "$MARKET_DATASET_GLOB" \
-      --output-dir "$OUTPUT_DIR" 2>&1 | tee -a "$terminal_log"
+      --output-dir "$REPORT_OUTPUT_DIR" 2>&1 | tee -a "$terminal_log"
   fi
 
   printf '\nTiingo benchmark-gap feature study complete.\n'
@@ -388,4 +390,3 @@ main() {
 if [[ "${TIINGO_BENCHMARK_GAP_FEATURE_STUDY_TEST_HELPERS:-0}" != "1" ]]; then
   main "$@"
 fi
-

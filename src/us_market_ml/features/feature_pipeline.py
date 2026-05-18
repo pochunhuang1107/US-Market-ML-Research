@@ -6,11 +6,14 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from us_market_ml.features.benchmark_gap import (
+    add_benchmark_gap_features,
+    add_benchmark_gap_v2_features,
+)
 from us_market_ml.features.cross_asset import (
     add_cross_asset_features,
     add_technical_v2_cross_sectional_features,
 )
-from us_market_ml.features.benchmark_gap import add_benchmark_gap_features
 from us_market_ml.features.technical import add_technical_features, add_technical_v2_features
 
 REQUIRED_COLUMNS: frozenset[str] = frozenset(
@@ -19,11 +22,13 @@ REQUIRED_COLUMNS: frozenset[str] = frozenset(
 DEFAULT_FEATURE_SET_VERSION = "default_features_v1"
 TECHNICAL_FEATURE_SET_VERSION = "technical_features_v2"
 BENCHMARK_GAP_FEATURE_SET_VERSION = "benchmark_gap_features_v1"
+BENCHMARK_GAP_V2_FEATURE_SET_VERSION = "benchmark_gap_features_v2"
 SUPPORTED_FEATURE_SET_VERSIONS: frozenset[str] = frozenset(
     {
         DEFAULT_FEATURE_SET_VERSION,
         TECHNICAL_FEATURE_SET_VERSION,
         BENCHMARK_GAP_FEATURE_SET_VERSION,
+        BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
     }
 )
 
@@ -65,6 +70,8 @@ def build_feature_frame(
         out = add_technical_v2_cross_sectional_features(out)
     if resolved_config.feature_set_version == BENCHMARK_GAP_FEATURE_SET_VERSION:
         out = add_benchmark_gap_features(out)
+    if resolved_config.feature_set_version == BENCHMARK_GAP_V2_FEATURE_SET_VERSION:
+        out = add_benchmark_gap_v2_features(out)
     return out
 
 
