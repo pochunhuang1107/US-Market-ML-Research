@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import glob
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from us_market_ml.backtest.signal_backtester import calculate_max_drawdown
 from us_market_ml.cli.create_tiingo_modern_baseline_sweep_report import (
     DATASET_SOURCE_LABEL,
     REQUIRED_RESULTS_COLUMNS,
@@ -20,6 +23,7 @@ from us_market_ml.cli.create_tiingo_modern_baseline_sweep_report import (
     _positive_rate,
     _validate_columns,
 )
+from us_market_ml.data.local_reader import read_csv_files, read_parquet_files
 
 DEFAULT_RESULTS_CSV = Path(
     "artifacts/sweeps/tiingo_focused_linear_ridge_confirmation/"
@@ -33,6 +37,19 @@ DEFAULT_DECISION_MATRIX_CSV = Path(
     "artifacts/reports/tiingo_focused_linear_ridge_confirmation/"
     "tiingo_focused_linear_ridge_confirmation_decision_matrix.csv"
 )
+DEFAULT_CORE_LINEAR_RESULTS_CSV = Path(
+    "artifacts/sweeps/tiingo_modern_baseline_sweep/"
+    "tiingo_modern_baseline_sweep_core_linear_results.csv"
+)
+DEFAULT_CORE_LINEAR_SUMMARY_CSV = Path(
+    "artifacts/reports/tiingo_modern_baseline_sweep_core_linear/"
+    "tiingo_modern_baseline_summary.csv"
+)
+DEFAULT_MARKET_DATASET_GLOB = (
+    "/Users/casper/Projects/Research/Market Data/data/research/"
+    "etf_daily_prices_tiingo_only/**/*.parquet"
+)
+DEFAULT_BENCHMARK_SYMBOLS = ("SPY", "QQQ")
 DEFAULT_OUTPUT_DIR = Path("artifacts/reports/tiingo_selected_candidate_evaluation")
 
 SUMMARY_PATH_NAME = "selected_candidate_summary.csv"
@@ -40,6 +57,10 @@ DECISION_MATRIX_PATH_NAME = "selected_candidate_decision_matrix.csv"
 WINDOW_STABILITY_PATH_NAME = "selected_candidate_window_stability.csv"
 COST_SENSITIVITY_PATH_NAME = "selected_candidate_cost_sensitivity.csv"
 COMPARISON_PATH_NAME = "selected_candidate_comparison.csv"
+BENCHMARK_REFERENCES_PATH_NAME = "selected_candidate_benchmark_references.csv"
+HISTORICAL_CHAMPION_REFERENCE_PATH_NAME = (
+    "selected_candidate_historical_champion_reference.csv"
+)
 REPORT_PATH_NAME = "selected_candidate_evaluation_report.md"
 MODEL_CARD_DRAFT_PATH_NAME = "selected_candidate_model_card_draft.md"
 OUTPUT_PATH_NAMES = (
@@ -48,6 +69,8 @@ OUTPUT_PATH_NAMES = (
     WINDOW_STABILITY_PATH_NAME,
     COST_SENSITIVITY_PATH_NAME,
     COMPARISON_PATH_NAME,
+    BENCHMARK_REFERENCES_PATH_NAME,
+    HISTORICAL_CHAMPION_REFERENCE_PATH_NAME,
     REPORT_PATH_NAME,
     MODEL_CARD_DRAFT_PATH_NAME,
 )
@@ -67,9 +90,11 @@ SUMMARY_COLUMNS = [
     "model_type",
     "top_k",
     "allocation_mode",
+    "benchmark_symbol",
     "min_holding_days",
     "switch_margin",
     "decision_anchor_bps",
+    "transaction_cost_bps",
     "window_count_10bps",
     "average_test_return_10bps",
     "median_test_return_10bps",
@@ -109,6 +134,8 @@ DECISION_MATRIX_COLUMNS = [
     "positive_window_gate",
     "cost_sensitivity_gate",
     "drawdown_vs_top1_gate",
+    "historical_champion_gate",
+    "benchmark_reference_gate",
     "evidence_scope_gate",
     "return_strength",
     "positive_window_strength",
@@ -116,6 +143,8 @@ DECISION_MATRIX_COLUMNS = [
     "cost_resilience",
     "drawdown_vs_return_reference",
     "cost_resilience_vs_drawdown_guardrail",
+    "historical_champion_profile",
+    "benchmark_reference_profile",
     "evidence_scope",
     "promote_primary_candidate",
     "recommendation",
@@ -196,9 +225,53 @@ COMPARISON_COLUMNS = [
     "interpretation",
 ]
 
+BENCHMARK_REFERENCE_COLUMNS = [
+    "candidate_role",
+    "candidate_classification",
+    "candidate_label",
+    "dataset_source",
+    "sweep_profile",
+    "model_family",
+    "model_type",
+    "allocation_mode",
+    "benchmark_symbol",
+    "transaction_cost_bps",
+    "price_column",
+    "fold",
+    "train_window_years",
+    "validation_window_months",
+    "test_window_months",
+    "sequence_number",
+    "test_start",
+    "test_end",
+    "first_price_date",
+    "last_price_date",
+    "observation_count",
+    "total_return",
+    "mean_daily_return",
+    "daily_volatility",
+    "sharpe_like",
+    "max_drawdown",
+    "final_equity",
+    "total_transaction_cost",
+    "mean_daily_turnover",
+    "run_key",
+]
+
 PRIMARY_ROLE = "primary_balanced_candidate"
 RETURN_REFERENCE_ROLE = "return_reference"
 DRAWDOWN_GUARDRAIL_ROLE = "drawdown_guardrail"
+HISTORICAL_CHAMPION_ROLE = "historical_return_champion_reference"
+BENCHMARK_REFERENCE_ROLE = "benchmark_reference"
+
+_FOLD_WINDOW_RE = re.compile(
+    r"tw(?P<train_window_years>\d+)y"
+    r"_v(?P<validation_window_months>\d+)m"
+    r"_t(?P<test_window_months>\d+)m"
+    r"_q(?P<sequence_number>\d+)"
+    r"_(?P<test_start>\d{8})"
+    r"_(?P<test_end>\d{8})"
+)
 
 
 @dataclass(frozen=True)
@@ -236,6 +309,8 @@ class TiingoSelectedCandidateEvaluationData:
     window_stability: pd.DataFrame
     cost_sensitivity: pd.DataFrame
     comparison: pd.DataFrame
+    benchmark_references: pd.DataFrame
+    historical_champion_reference: pd.DataFrame
     warnings: tuple[str, ...]
     result_row_count: int
     test_row_count: int
@@ -243,6 +318,19 @@ class TiingoSelectedCandidateEvaluationData:
     source_summary_row_count: int
     source_decision_matrix_row_count: int
     dataset_source: str = DATASET_SOURCE_LABEL
+
+
+@dataclass(frozen=True)
+class BenchmarkTestWindow:
+    """One focused confirmation test window used for benchmark references."""
+
+    fold: str
+    train_window_years: float
+    validation_window_months: float
+    test_window_months: float
+    sequence_number: float
+    test_start: pd.Timestamp
+    test_end: pd.Timestamp
 
 
 SELECTED_CANDIDATE_SPECS = (
@@ -272,6 +360,17 @@ SELECTED_CANDIDATE_SPECS = (
     ),
 )
 
+HISTORICAL_CHAMPION_SPEC = SelectedCandidateSpec(
+    role=HISTORICAL_CHAMPION_ROLE,
+    classification="historical return champion reference",
+    model_type="linear_regression",
+    top_k=1,
+    min_holding_days=10,
+    switch_margin=0.002,
+)
+
+MODELED_REFERENCE_SPECS = (*SELECTED_CANDIDATE_SPECS, HISTORICAL_CHAMPION_SPEC)
+
 
 def run_tiingo_selected_candidate_evaluation_bundle_from_args(
     argv: list[str] | None = None,
@@ -283,6 +382,11 @@ def run_tiingo_selected_candidate_evaluation_bundle_from_args(
         results_csv=args.results_csv,
         summary_csv=args.summary_csv,
         decision_matrix_csv=args.decision_matrix_csv,
+        core_linear_results_csv=args.core_linear_results_csv,
+        core_linear_summary_csv=args.core_linear_summary_csv,
+        market_dataset_glob=args.market_dataset_glob,
+        benchmark_symbols=args.benchmark_symbols,
+        skip_missing_references=args.skip_missing_references,
     )
     outputs = write_tiingo_selected_candidate_evaluation_bundle(
         report_data=report_data,
@@ -296,6 +400,10 @@ def run_tiingo_selected_candidate_evaluation_bundle_from_args(
     print(f"results CSV: {args.results_csv}")
     print(f"summary CSV: {args.summary_csv}")
     print(f"decision matrix CSV: {args.decision_matrix_csv}")
+    print(f"core linear results CSV: {args.core_linear_results_csv}")
+    print(f"core linear summary CSV: {args.core_linear_summary_csv}")
+    print(f"market dataset glob: {args.market_dataset_glob}")
+    print(f"benchmark symbols: {', '.join(_parse_benchmark_symbols(args.benchmark_symbols))}")
     print(f"output dir: {args.output_dir}")
     for output_name in OUTPUT_PATH_NAMES:
         print(f"{output_name}: {outputs[output_name]}")
@@ -314,6 +422,11 @@ def build_tiingo_selected_candidate_evaluation_bundle(
     results_csv: Path = DEFAULT_RESULTS_CSV,
     summary_csv: Path = DEFAULT_SUMMARY_CSV,
     decision_matrix_csv: Path = DEFAULT_DECISION_MATRIX_CSV,
+    core_linear_results_csv: Path = DEFAULT_CORE_LINEAR_RESULTS_CSV,
+    core_linear_summary_csv: Path = DEFAULT_CORE_LINEAR_SUMMARY_CSV,
+    market_dataset_glob: str | Path = DEFAULT_MARKET_DATASET_GLOB,
+    benchmark_symbols: str | Sequence[str] = DEFAULT_BENCHMARK_SYMBOLS,
+    skip_missing_references: bool = False,
 ) -> TiingoSelectedCandidateEvaluationData:
     """Read focused confirmation outputs and build selected-candidate tables."""
 
@@ -321,6 +434,7 @@ def build_tiingo_selected_candidate_evaluation_bundle(
     _validate_columns(results, REQUIRED_RESULTS_COLUMNS, path=results_csv)
     source_summary = pd.read_csv(summary_csv)
     source_decision_matrix = pd.read_csv(decision_matrix_csv)
+    resolved_benchmark_symbols = _parse_benchmark_symbols(benchmark_symbols)
 
     test_rows = results.loc[results["split"].astype(str).eq("test")].copy()
     if test_rows.empty:
@@ -336,10 +450,25 @@ def build_tiingo_selected_candidate_evaluation_bundle(
         raise ValueError("No selected Tiingo ridge candidate test rows were found.")
 
     warnings = list(_source_input_warnings(source_summary, source_decision_matrix))
+    historical_rows, historical_summary, historical_warnings = (
+        _build_historical_champion_reference_summary(
+            core_linear_results_csv=core_linear_results_csv,
+            core_linear_summary_csv=core_linear_summary_csv,
+            skip_missing_references=skip_missing_references,
+        )
+    )
+    warnings.extend(historical_warnings)
+
     candidate_summary = _build_candidate_summary(
         included,
         source_decision_matrix=source_decision_matrix,
+        specs=SELECTED_CANDIDATE_SPECS,
     )
+    if not historical_summary.empty:
+        candidate_summary = pd.concat(
+            [candidate_summary, historical_summary],
+            ignore_index=True,
+        )
     missing_roles = [
         spec.role
         for spec in SELECTED_CANDIDATE_SPECS
@@ -351,11 +480,35 @@ def build_tiingo_selected_candidate_evaluation_bundle(
             + ", ".join(missing_roles)
         )
 
-    cost_sensitivity = _build_cost_sensitivity(included, candidate_summary)
-    window_stability = _build_window_stability(included)
+    benchmark_references, benchmark_summary, benchmark_warnings = _build_benchmark_references(
+        market_dataset_glob=market_dataset_glob,
+        benchmark_symbols=resolved_benchmark_symbols,
+        focused_test_rows=included,
+        skip_missing_references=skip_missing_references,
+    )
+    warnings.extend(benchmark_warnings)
+    if not benchmark_summary.empty:
+        candidate_summary = pd.concat(
+            [candidate_summary, benchmark_summary],
+            ignore_index=True,
+        )
+
+    modeled_rows = pd.concat([included, historical_rows], ignore_index=True)
+    cost_sensitivity = _build_cost_sensitivity(
+        modeled_rows,
+        candidate_summary,
+        specs=MODELED_REFERENCE_SPECS,
+    )
+    window_stability = _build_window_stability(
+        modeled_rows,
+        specs=MODELED_REFERENCE_SPECS,
+    )
     comparison = _build_comparison(candidate_summary)
     decision_matrix = _build_decision_matrix(candidate_summary)
     candidate_summary = _apply_decision_recommendations(candidate_summary, decision_matrix)
+    historical_champion_reference = candidate_summary.loc[
+        candidate_summary["candidate_role"].astype(str).eq(HISTORICAL_CHAMPION_ROLE)
+    ].copy()
 
     return TiingoSelectedCandidateEvaluationData(
         candidate_summary=candidate_summary,
@@ -363,6 +516,8 @@ def build_tiingo_selected_candidate_evaluation_bundle(
         window_stability=window_stability,
         cost_sensitivity=cost_sensitivity,
         comparison=comparison,
+        benchmark_references=benchmark_references,
+        historical_champion_reference=historical_champion_reference,
         warnings=tuple(warnings),
         result_row_count=int(len(results)),
         test_row_count=int(len(test_rows)),
@@ -386,6 +541,10 @@ def write_tiingo_selected_candidate_evaluation_bundle(
         WINDOW_STABILITY_PATH_NAME: output_dir / WINDOW_STABILITY_PATH_NAME,
         COST_SENSITIVITY_PATH_NAME: output_dir / COST_SENSITIVITY_PATH_NAME,
         COMPARISON_PATH_NAME: output_dir / COMPARISON_PATH_NAME,
+        BENCHMARK_REFERENCES_PATH_NAME: output_dir / BENCHMARK_REFERENCES_PATH_NAME,
+        HISTORICAL_CHAMPION_REFERENCE_PATH_NAME: (
+            output_dir / HISTORICAL_CHAMPION_REFERENCE_PATH_NAME
+        ),
         REPORT_PATH_NAME: output_dir / REPORT_PATH_NAME,
         MODEL_CARD_DRAFT_PATH_NAME: output_dir / MODEL_CARD_DRAFT_PATH_NAME,
     }
@@ -394,6 +553,14 @@ def write_tiingo_selected_candidate_evaluation_bundle(
     report_data.window_stability.to_csv(outputs[WINDOW_STABILITY_PATH_NAME], index=False)
     report_data.cost_sensitivity.to_csv(outputs[COST_SENSITIVITY_PATH_NAME], index=False)
     report_data.comparison.to_csv(outputs[COMPARISON_PATH_NAME], index=False)
+    report_data.benchmark_references.to_csv(
+        outputs[BENCHMARK_REFERENCES_PATH_NAME],
+        index=False,
+    )
+    report_data.historical_champion_reference.to_csv(
+        outputs[HISTORICAL_CHAMPION_REFERENCE_PATH_NAME],
+        index=False,
+    )
     outputs[REPORT_PATH_NAME].write_text(
         render_tiingo_selected_candidate_evaluation_markdown(report_data),
         encoding="utf-8",
@@ -413,11 +580,52 @@ def render_tiingo_selected_candidate_evaluation_markdown(
     primary = _summary_row(report_data.candidate_summary, PRIMARY_ROLE)
     return_reference = _summary_row(report_data.candidate_summary, RETURN_REFERENCE_ROLE)
     drawdown_guardrail = _summary_row(report_data.candidate_summary, DRAWDOWN_GUARDRAIL_ROLE)
+    historical_champion = _summary_row_optional(
+        report_data.candidate_summary,
+        HISTORICAL_CHAMPION_ROLE,
+    )
+    benchmark_rows = _benchmark_summary_rows(report_data.candidate_summary)
     primary_decision = _decision_row(report_data.decision_matrix, PRIMARY_ROLE)
     recommended_next_step = str(primary_decision["next_action"])
     window_count = int(primary["window_count_10bps"])
 
     primary_metrics = _primary_metric_table(primary)
+    benchmark_table = _format_for_markdown(
+        benchmark_rows[
+            [
+                "candidate_label",
+                "benchmark_symbol",
+                "average_test_return_10bps",
+                "positive_window_rate_10bps",
+                "average_sharpe_like_10bps",
+                "average_max_drawdown_10bps",
+                "worst_max_drawdown_10bps",
+                "window_count_10bps",
+            ]
+        ]
+        if not benchmark_rows.empty
+        else benchmark_rows,
+        exclude={"candidate_label", "benchmark_symbol"},
+    )
+    historical_table = _format_for_markdown(
+        pd.DataFrame([historical_champion])
+        [
+            [
+                "candidate_label",
+                "average_test_return_10bps",
+                "positive_window_rate_10bps",
+                "average_sharpe_like_10bps",
+                "average_max_drawdown_10bps",
+                "worst_max_drawdown_10bps",
+                "average_test_return_20bps",
+                "cost_delta_20_vs_10",
+                "average_mean_daily_turnover_10bps",
+            ]
+        ]
+        if historical_champion is not None
+        else pd.DataFrame(),
+        exclude={"candidate_label"},
+    )
     comparison_table = _format_for_markdown(
         report_data.comparison,
         exclude={"comparison_name", "primary_candidate_label", "comparison_candidate_label"},
@@ -439,6 +647,8 @@ def render_tiingo_selected_candidate_evaluation_markdown(
                 "positive_window_gate",
                 "cost_sensitivity_gate",
                 "drawdown_vs_top1_gate",
+                "historical_champion_gate",
+                "benchmark_reference_gate",
                 "evidence_scope_gate",
                 "recommendation",
                 "next_action",
@@ -451,6 +661,8 @@ def render_tiingo_selected_candidate_evaluation_markdown(
             "positive_window_gate",
             "cost_sensitivity_gate",
             "drawdown_vs_top1_gate",
+            "historical_champion_gate",
+            "benchmark_reference_gate",
             "evidence_scope_gate",
             "recommendation",
             "next_action",
@@ -491,6 +703,27 @@ def render_tiingo_selected_candidate_evaluation_markdown(
         "",
         _markdown_table(_format_for_markdown(primary_metrics, exclude={"metric"})),
         "",
+        "## Benchmark References",
+        "",
+        "SPY and QQQ buy-and-hold references are included so the selected ridge "
+        "candidate is not judged only against internal ridge variants.",
+        "",
+        "Benchmark calculation caveat: buy-and-hold metrics are computed from "
+        "adjusted close over the focused confirmation test windows, using the "
+        "first and last available trading-day closes inside each window. No "
+        "transaction cost is applied to benchmark rows; `transaction_cost_bps` "
+        "is marked as `0`.",
+        "",
+        _markdown_table(benchmark_table),
+        "",
+        "## Historical Champion Reference",
+        "",
+        "The original historical fixed-fold / earlier return champion is retained "
+        "for continuity: `linear_regression / top1 / hold 10 / margin 0.002`. "
+        "It is not the current primary candidate.",
+        "",
+        _markdown_table(historical_table),
+        "",
         "## Primary vs Return Reference",
         "",
         _markdown_table(
@@ -514,6 +747,36 @@ def render_tiingo_selected_candidate_evaluation_markdown(
         "The drawdown guardrail remains useful for risk-control comparisons, but "
         "the shorter holding configuration has higher observed transaction cost "
         "and turnover pressure.",
+        "",
+        "## Primary vs Historical Champion",
+        "",
+        _markdown_table(
+            comparison_table.loc[
+                comparison_table["comparison_name"].eq("primary_vs_historical_champion")
+            ]
+        ),
+        "",
+        _historical_markdown_sentence(primary, historical_champion),
+        "",
+        "## Primary vs SPY Buy-and-Hold",
+        "",
+        _markdown_table(
+            comparison_table.loc[
+                comparison_table["comparison_name"].eq("primary_vs_spy_buy_hold")
+            ]
+        ),
+        "",
+        _benchmark_markdown_sentence(primary, benchmark_rows, "SPY"),
+        "",
+        "## Primary vs QQQ Buy-and-Hold",
+        "",
+        _markdown_table(
+            comparison_table.loc[
+                comparison_table["comparison_name"].eq("primary_vs_qqq_buy_hold")
+            ]
+        ),
+        "",
+        _benchmark_markdown_sentence(primary, benchmark_rows, "QQQ"),
         "",
         "## Window Stability",
         "",
@@ -543,18 +806,22 @@ def render_tiingo_selected_candidate_evaluation_markdown(
         "",
         _markdown_table(decision_table),
         "",
+        "## Updated Decision",
+        "",
+        _updated_decision_sentence(primary_decision),
+        "",
         "- Classification: `primary research baseline candidate`.",
         "- Return reference: `ridge / top1 / hold 20 / margin 0.005`.",
         "- Drawdown guardrail: `ridge / top5 / hold 5 / margin 0.002`.",
+        "- Historical champion reference: `linear_regression / top1 / hold 10 / "
+        "margin 0.002`.",
+        "- Benchmark references: `SPY buy-and-hold`, `QQQ buy-and-hold`.",
         "",
         "## Next-Step Recommendation",
         "",
         f"Recommended next step: {recommended_next_step}",
         "",
-        "Do not run `tree_screen` immediately. Do not run MLP immediately. The "
-        "ridge top5 primary is strong enough to become the current research "
-        "baseline target to beat, while still needing model-card review and "
-        "feature-engineering challengers before heavier model families.",
+        _next_step_markdown_sentence(primary_decision),
         "",
     ]
     if report_data.warnings:
@@ -625,6 +892,87 @@ def render_selected_candidate_model_card_draft(
     return "\n".join(lines)
 
 
+def _historical_markdown_sentence(
+    primary: pd.Series,
+    historical_champion: pd.Series | None,
+) -> str:
+    if historical_champion is None:
+        return "Historical champion metrics were unavailable in the provided reference inputs."
+    return_delta = _delta(primary, historical_champion, "average_test_return_10bps")
+    drawdown_delta = _delta(primary, historical_champion, "worst_max_drawdown_10bps")
+    turnover_delta = _delta(
+        historical_champion,
+        primary,
+        "average_mean_daily_turnover_10bps",
+    )
+    return (
+        "Primary vs historical champion: "
+        f"average-return delta `{_format_number(return_delta)}`, "
+        f"worst-drawdown delta `{_format_number(drawdown_delta)}`, "
+        f"turnover improvement `{_format_number(turnover_delta)}`. "
+        "Positive drawdown and turnover deltas favor the primary candidate."
+    )
+
+
+def _benchmark_markdown_sentence(
+    primary: pd.Series,
+    benchmark_rows: pd.DataFrame,
+    symbol: str,
+) -> str:
+    matches = benchmark_rows.loc[
+        benchmark_rows["benchmark_symbol"].astype(str).str.upper().eq(symbol.upper())
+    ]
+    if matches.empty:
+        return f"{symbol.upper()} buy-and-hold metrics were unavailable."
+    benchmark = matches.iloc[0]
+    return_delta = _delta(primary, benchmark, "average_test_return_10bps")
+    sharpe_delta = _delta(primary, benchmark, "average_sharpe_like_10bps")
+    drawdown_delta = _delta(primary, benchmark, "worst_max_drawdown_10bps")
+    if _valid_number(return_delta) and return_delta < -0.02:
+        raw_return_note = f"{symbol.upper()} is materially stronger on raw return"
+    elif _valid_number(return_delta) and return_delta >= 0.0:
+        raw_return_note = "primary is stronger on raw return"
+    else:
+        raw_return_note = "primary is close on raw return"
+    return (
+        f"Primary vs {symbol.upper()} buy-and-hold: {raw_return_note}; "
+        f"average-return delta `{_format_number(return_delta)}`, "
+        f"Sharpe-like delta `{_format_number(sharpe_delta)}`, "
+        f"worst-drawdown delta `{_format_number(drawdown_delta)}`."
+    )
+
+
+def _updated_decision_sentence(primary_decision: pd.Series) -> str:
+    if str(primary_decision["recommendation"]) == "primary research baseline candidate":
+        return (
+            "After adding SPY/QQQ buy-and-hold and the historical champion, the "
+            "ridge top5 hold20 margin0.005 candidate remains the current research "
+            "baseline target to beat. This remains a research decision, not a "
+            "production-ready designation."
+        )
+    return (
+        "After adding SPY/QQQ buy-and-hold and the historical champion, the ridge "
+        "top5 hold20 margin0.005 candidate needs further review before it can be "
+        "treated as the current research baseline target to beat."
+    )
+
+
+def _next_step_markdown_sentence(primary_decision: pd.Series) -> str:
+    if str(primary_decision["recommendation"]) == "primary research baseline candidate":
+        return (
+            "Do not run `tree_screen` immediately. Do not run MLP immediately. The "
+            "ridge top5 primary is strong enough to become the current research "
+            "baseline target to beat, while still needing model-card review and "
+            "feature-engineering challengers before heavier model families."
+        )
+    return (
+        "Do not run `tree_screen` immediately. Do not run MLP immediately. Because "
+        "the benchmark gate is still a watch item, keep this as a selected research "
+        "candidate and replay it with richer benchmark-aware artifacts before "
+        "treating it as the baseline target to beat."
+    )
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create the Tiingo selected-candidate evaluation bundle."
@@ -636,17 +984,387 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         type=Path,
         default=DEFAULT_DECISION_MATRIX_CSV,
     )
+    parser.add_argument(
+        "--core-linear-results-csv",
+        type=Path,
+        default=DEFAULT_CORE_LINEAR_RESULTS_CSV,
+    )
+    parser.add_argument(
+        "--core-linear-summary-csv",
+        type=Path,
+        default=DEFAULT_CORE_LINEAR_SUMMARY_CSV,
+    )
+    parser.add_argument(
+        "--market-dataset-glob",
+        default=DEFAULT_MARKET_DATASET_GLOB,
+    )
+    parser.add_argument(
+        "--benchmark-symbols",
+        nargs="+",
+        default=[",".join(DEFAULT_BENCHMARK_SYMBOLS)],
+        help="Comma-separated or space-separated benchmark symbols, default SPY,QQQ.",
+    )
+    parser.add_argument(
+        "--skip-missing-references",
+        action="store_true",
+        help=(
+            "Build the selected-candidate-only bundle when historical or benchmark "
+            "reference inputs are missing, recording warnings instead of failing."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     return parser.parse_args(argv)
+
+
+def _build_historical_champion_reference_summary(
+    *,
+    core_linear_results_csv: Path,
+    core_linear_summary_csv: Path,
+    skip_missing_references: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame, tuple[str, ...]]:
+    warnings: list[str] = []
+    core_results = _read_required_reference_csv(
+        core_linear_results_csv,
+        label="core linear results CSV",
+        skip_missing_references=skip_missing_references,
+        warnings=warnings,
+    )
+    core_summary = _read_required_reference_csv(
+        core_linear_summary_csv,
+        label="core linear summary CSV",
+        skip_missing_references=skip_missing_references,
+        warnings=warnings,
+    )
+    if core_results is None or core_summary is None:
+        return pd.DataFrame(), pd.DataFrame(columns=SUMMARY_COLUMNS), tuple(warnings)
+
+    _validate_columns(core_results, REQUIRED_RESULTS_COLUMNS, path=core_linear_results_csv)
+    test_rows = core_results.loc[core_results["split"].astype(str).eq("test")].copy()
+    enriched = _enrich_test_rows(test_rows)
+    historical_rows = _match_spec(enriched, HISTORICAL_CHAMPION_SPEC).loc[
+        lambda frame: frame["model_family"].astype(str).eq("baseline")
+        & _series_in_float_values(frame["transaction_cost_bps"], SENSITIVITY_COSTS_BPS)
+    ].copy()
+    if historical_rows.empty or historical_rows.loc[
+        _float_eq(historical_rows, "transaction_cost_bps", DECISION_ANCHOR_BPS)
+    ].empty:
+        message = (
+            "Historical champion reference was not found at the 10bps decision anchor "
+            f"in core linear results CSV {core_linear_results_csv}: "
+            f"{HISTORICAL_CHAMPION_SPEC.label}."
+        )
+        if skip_missing_references:
+            warnings.append(message)
+            return pd.DataFrame(), pd.DataFrame(columns=SUMMARY_COLUMNS), tuple(warnings)
+        raise ValueError(message)
+
+    historical_summary = _build_candidate_summary(
+        historical_rows,
+        source_decision_matrix=core_summary,
+        specs=(HISTORICAL_CHAMPION_SPEC,),
+    )
+    return historical_rows, historical_summary, tuple(warnings)
+
+
+def _read_required_reference_csv(
+    path: Path,
+    *,
+    label: str,
+    skip_missing_references: bool,
+    warnings: list[str],
+) -> pd.DataFrame | None:
+    resolved_path = Path(path)
+    if resolved_path.exists():
+        return pd.read_csv(resolved_path)
+    message = (
+        f"Required reference input is missing: {label} at {resolved_path}. "
+        f"Pass --{label.replace(' ', '-').lower()} with a valid path"
+        " or use --skip-missing-references to build without external references."
+    )
+    if skip_missing_references:
+        warnings.append(message)
+        return None
+    raise FileNotFoundError(message)
+
+
+def _build_benchmark_references(
+    *,
+    market_dataset_glob: str | Path,
+    benchmark_symbols: Sequence[str],
+    focused_test_rows: pd.DataFrame,
+    skip_missing_references: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame, tuple[str, ...]]:
+    warnings: list[str] = []
+    if not benchmark_symbols:
+        return (
+            pd.DataFrame(columns=BENCHMARK_REFERENCE_COLUMNS),
+            pd.DataFrame(columns=SUMMARY_COLUMNS),
+            ("No benchmark symbols were requested.",),
+        )
+
+    try:
+        market_data = _read_benchmark_market_data(market_dataset_glob, benchmark_symbols)
+    except (FileNotFoundError, ValueError) as exc:
+        message = (
+            f"Benchmark reference input could not be loaded from {market_dataset_glob}: "
+            f"{exc}"
+        )
+        if skip_missing_references:
+            warnings.append(message)
+            return (
+                pd.DataFrame(columns=BENCHMARK_REFERENCE_COLUMNS),
+                pd.DataFrame(columns=SUMMARY_COLUMNS),
+                tuple(warnings),
+            )
+        raise FileNotFoundError(message) from exc
+
+    price_column = _adjusted_close_column(market_data)
+    windows = _extract_benchmark_test_windows(focused_test_rows)
+    benchmark_rows: list[dict[str, object]] = []
+    for symbol in benchmark_symbols:
+        symbol_rows = market_data.loc[
+            market_data["symbol"].astype(str).str.upper().eq(symbol.upper())
+        ].copy()
+        if symbol_rows.empty:
+            warnings.append(f"Benchmark symbol {symbol} was not present in market data.")
+            continue
+        for window in windows:
+            metrics = _benchmark_metrics_for_window(
+                symbol_rows=symbol_rows,
+                symbol=symbol,
+                price_column=price_column,
+                window=window,
+            )
+            if metrics is None:
+                warnings.append(
+                    f"Benchmark {symbol} skipped fold {window.fold}: fewer than two "
+                    f"adjusted-close observations between "
+                    f"{window.test_start.date().isoformat()} and "
+                    f"{window.test_end.date().isoformat()}."
+                )
+                continue
+            benchmark_rows.append(metrics)
+
+    benchmark_references = pd.DataFrame(benchmark_rows, columns=BENCHMARK_REFERENCE_COLUMNS)
+    benchmark_summary = _build_benchmark_summary(benchmark_references, benchmark_symbols)
+    return benchmark_references, benchmark_summary, tuple(warnings)
+
+
+def _read_benchmark_market_data(
+    market_dataset_glob: str | Path,
+    benchmark_symbols: Sequence[str],
+) -> pd.DataFrame:
+    pattern = str(market_dataset_glob)
+    matched_paths = sorted(Path(path) for path in glob.glob(pattern, recursive=True))
+    file_paths = [path for path in matched_paths if path.is_file()]
+    if not file_paths:
+        raise FileNotFoundError(f"Market dataset glob matched no files: {pattern}")
+
+    symbol_filtered_paths = [
+        path
+        for path in file_paths
+        if _path_mentions_benchmark_symbol(path, benchmark_symbols)
+    ]
+    read_paths = symbol_filtered_paths if symbol_filtered_paths else file_paths
+    parquet_paths = [path for path in read_paths if path.suffix.lower() == ".parquet"]
+    if parquet_paths:
+        return read_parquet_files(parquet_paths)
+
+    csv_paths = [path for path in read_paths if path.suffix.lower() == ".csv"]
+    if csv_paths:
+        return read_csv_files(csv_paths)
+
+    raise ValueError("Benchmark market data glob matched no supported .parquet or .csv files.")
+
+
+def _path_mentions_benchmark_symbol(path: Path, benchmark_symbols: Sequence[str]) -> bool:
+    parts = {part.upper() for part in path.parts}
+    for symbol in benchmark_symbols:
+        upper_symbol = symbol.upper()
+        if upper_symbol in parts or f"SYMBOL={upper_symbol}" in parts:
+            return True
+    return False
+
+
+def _adjusted_close_column(market_data: pd.DataFrame) -> str:
+    for column in ["adj_close", "adjusted_close", "adjClose", "adjustedClose"]:
+        if column in market_data.columns:
+            return column
+    raise ValueError(
+        "Benchmark market data is missing an adjusted-close column; expected one of "
+        "adj_close, adjusted_close, adjClose, adjustedClose."
+    )
+
+
+def _extract_benchmark_test_windows(rows: pd.DataFrame) -> list[BenchmarkTestWindow]:
+    if rows.empty:
+        return []
+    windows: list[BenchmarkTestWindow] = []
+    for _, row in rows.drop_duplicates(subset=["fold"], keep="first").iterrows():
+        windows.append(_benchmark_test_window_from_row(row))
+    return sorted(windows, key=lambda window: (window.test_start, window.fold))
+
+
+def _benchmark_test_window_from_row(row: pd.Series) -> BenchmarkTestWindow:
+    fold = str(row["fold"])
+    match = _FOLD_WINDOW_RE.search(fold)
+    if match is None:
+        raise ValueError(
+            "Focused confirmation fold names must include test start/end dates in "
+            f"tw{{years}}y_v{{months}}m_t{{months}}m_q{{sequence}}_YYYYMMDD_YYYYMMDD format: {fold}"
+        )
+    parts = match.groupdict()
+    test_start = pd.to_datetime(parts["test_start"], format="%Y%m%d")
+    test_end = pd.to_datetime(parts["test_end"], format="%Y%m%d")
+    if test_start > test_end:
+        raise ValueError(f"Fold {fold!r} has test_start after test_end.")
+    return BenchmarkTestWindow(
+        fold=fold,
+        train_window_years=float(parts["train_window_years"]),
+        validation_window_months=float(parts["validation_window_months"]),
+        test_window_months=float(parts["test_window_months"]),
+        sequence_number=float(parts["sequence_number"]),
+        test_start=test_start,
+        test_end=test_end,
+    )
+
+
+def _benchmark_metrics_for_window(
+    *,
+    symbol_rows: pd.DataFrame,
+    symbol: str,
+    price_column: str,
+    window: BenchmarkTestWindow,
+) -> dict[str, object] | None:
+    prices = symbol_rows[[price_column, "date"]].copy()
+    prices["date"] = pd.to_datetime(prices["date"])
+    prices[price_column] = pd.to_numeric(prices[price_column], errors="coerce")
+    mask = (prices["date"] >= window.test_start) & (prices["date"] <= window.test_end)
+    window_prices = (
+        prices.loc[mask]
+        .dropna(subset=[price_column])
+        .loc[lambda frame: frame[price_column] > 0.0]
+        .sort_values("date", kind="mergesort")
+        .reset_index(drop=True)
+    )
+    if len(window_prices) < 2:
+        return None
+
+    daily_returns = window_prices[price_column].pct_change().fillna(0.0)
+    equity = (1.0 + daily_returns).cumprod()
+    final_equity = float(equity.iloc[-1])
+    mean_daily_return = float(daily_returns.mean())
+    daily_volatility = float(daily_returns.std())
+    sharpe_like = (
+        mean_daily_return / daily_volatility
+        if daily_volatility > 0.0 and not np.isnan(daily_volatility)
+        else np.nan
+    )
+    label = f"{symbol.upper()} buy-and-hold"
+    return {
+        "candidate_role": BENCHMARK_REFERENCE_ROLE,
+        "candidate_classification": "benchmark buy-and-hold reference",
+        "candidate_label": label,
+        "dataset_source": DATASET_SOURCE_LABEL,
+        "sweep_profile": "focused_confirmation_test_windows",
+        "model_family": "benchmark",
+        "model_type": "buy_and_hold",
+        "allocation_mode": "buy_and_hold",
+        "benchmark_symbol": symbol.upper(),
+        "transaction_cost_bps": 0.0,
+        "price_column": price_column,
+        "fold": window.fold,
+        "train_window_years": window.train_window_years,
+        "validation_window_months": window.validation_window_months,
+        "test_window_months": window.test_window_months,
+        "sequence_number": window.sequence_number,
+        "test_start": window.test_start.date().isoformat(),
+        "test_end": window.test_end.date().isoformat(),
+        "first_price_date": pd.Timestamp(window_prices["date"].iloc[0]).date().isoformat(),
+        "last_price_date": pd.Timestamp(window_prices["date"].iloc[-1]).date().isoformat(),
+        "observation_count": int(len(window_prices)),
+        "total_return": final_equity - 1.0,
+        "mean_daily_return": mean_daily_return,
+        "daily_volatility": daily_volatility,
+        "sharpe_like": float(sharpe_like),
+        "max_drawdown": calculate_max_drawdown(equity),
+        "final_equity": final_equity,
+        "total_transaction_cost": 0.0,
+        "mean_daily_turnover": 0.0,
+        "run_key": f"{symbol.upper()}:{window.fold}:buy_and_hold",
+    }
+
+
+def _build_benchmark_summary(
+    benchmark_references: pd.DataFrame,
+    benchmark_symbols: Sequence[str],
+) -> pd.DataFrame:
+    if benchmark_references.empty:
+        return pd.DataFrame(columns=SUMMARY_COLUMNS)
+
+    rows: list[dict[str, object]] = []
+    for symbol in benchmark_symbols:
+        symbol_rows = benchmark_references.loc[
+            benchmark_references["benchmark_symbol"].astype(str).str.upper().eq(symbol.upper())
+        ].copy()
+        if symbol_rows.empty:
+            continue
+        metrics = _metrics_from_rows(symbol_rows)
+        row = {
+            "candidate_role": BENCHMARK_REFERENCE_ROLE,
+            "candidate_classification": "benchmark buy-and-hold reference",
+            "candidate_key": f"{BENCHMARK_REFERENCE_ROLE}:buy_and_hold:{symbol.upper()}",
+            "candidate_label": f"{symbol.upper()} buy-and-hold",
+            "dataset_source": DATASET_SOURCE_LABEL,
+            "sweep_profile": "focused_confirmation_test_windows",
+            "model_family": "benchmark",
+            "model_type": "buy_and_hold",
+            "top_k": np.nan,
+            "allocation_mode": "buy_and_hold",
+            "benchmark_symbol": symbol.upper(),
+            "min_holding_days": np.nan,
+            "switch_margin": np.nan,
+            "decision_anchor_bps": 0.0,
+            "transaction_cost_bps": 0.0,
+            **_prefix_metrics(metrics, "10bps"),
+            **_prefix_metrics(metrics, "20bps"),
+            "cost_delta_20_vs_10": 0.0,
+            "return_strength": _return_strength(metrics),
+            "positive_window_strength": _positive_window_strength(metrics),
+            "drawdown_control": _drawdown_control(metrics),
+            "cost_resilience": "not_applicable",
+            "evidence_scope": _evidence_scope(metrics["window_count"]),
+            "source_decision_recommendation": "",
+            "source_decision_rationale": "",
+            "recommendation": "",
+            "next_step": "",
+        }
+        rows.append(row)
+    return pd.DataFrame(rows, columns=SUMMARY_COLUMNS)
+
+
+def _parse_benchmark_symbols(symbols: str | Sequence[str]) -> tuple[str, ...]:
+    if isinstance(symbols, str):
+        raw_parts = [symbols]
+    else:
+        raw_parts = [str(symbol) for symbol in symbols]
+    parsed: list[str] = []
+    for raw_part in raw_parts:
+        for part in raw_part.split(","):
+            symbol = part.strip().upper()
+            if symbol and symbol not in parsed:
+                parsed.append(symbol)
+    return tuple(parsed)
 
 
 def _build_candidate_summary(
     rows: pd.DataFrame,
     *,
     source_decision_matrix: pd.DataFrame,
+    specs: Sequence[SelectedCandidateSpec],
 ) -> pd.DataFrame:
     summary_rows: list[dict[str, object]] = []
-    for spec in SELECTED_CANDIDATE_SPECS:
+    for spec in specs:
         spec_rows = _match_spec(rows, spec)
         anchor_rows = spec_rows.loc[
             _float_eq(spec_rows, "transaction_cost_bps", DECISION_ANCHOR_BPS)
@@ -674,9 +1392,11 @@ def _build_candidate_summary(
             "model_type": spec.model_type,
             "top_k": spec.top_k,
             "allocation_mode": str(first.get("allocation_mode", "unknown")),
+            "benchmark_symbol": "",
             "min_holding_days": spec.min_holding_days,
             "switch_margin": spec.switch_margin,
             "decision_anchor_bps": DECISION_ANCHOR_BPS,
+            "transaction_cost_bps": DECISION_ANCHOR_BPS,
             **_prefix_metrics(metrics_10, "10bps"),
             **_prefix_metrics(metrics_20, "20bps"),
             "cost_delta_20_vs_10": cost_delta,
@@ -698,8 +1418,12 @@ def _build_decision_matrix(candidate_summary: pd.DataFrame) -> pd.DataFrame:
     primary = _summary_row(candidate_summary, PRIMARY_ROLE)
     return_reference = _summary_row(candidate_summary, RETURN_REFERENCE_ROLE)
     drawdown_guardrail = _summary_row(candidate_summary, DRAWDOWN_GUARDRAIL_ROLE)
+    historical_champion = _summary_row_optional(candidate_summary, HISTORICAL_CHAMPION_ROLE)
+    benchmark_references = _benchmark_summary_rows(candidate_summary)
     drawdown_vs_top1 = _drawdown_vs_reference(primary, return_reference)
     cost_vs_guardrail = _cost_resilience_vs_guardrail(primary, drawdown_guardrail)
+    historical_profile = _historical_champion_profile(primary, historical_champion)
+    benchmark_profile = _benchmark_reference_profile(primary, benchmark_references)
 
     rows: list[dict[str, object]] = []
     for _, row in candidate_summary.iterrows():
@@ -710,6 +1434,10 @@ def _build_decision_matrix(candidate_summary: pd.DataFrame) -> pd.DataFrame:
         drawdown_gate = _gate(
             not is_primary or drawdown_vs_top1 in {"strong", "moderate"}
         )
+        historical_gate = _gate(not is_primary or historical_profile == "strong")
+        benchmark_gate = _gate(
+            not is_primary or benchmark_profile in {"strong", "moderate"}
+        )
         evidence_gate = _gate(str(row["evidence_scope"]) == "broad multi-window evidence")
         promote_primary = (
             is_primary
@@ -717,6 +1445,8 @@ def _build_decision_matrix(candidate_summary: pd.DataFrame) -> pd.DataFrame:
             and positive_gate == "pass"
             and cost_gate == "pass"
             and drawdown_gate == "pass"
+            and historical_gate == "pass"
+            and benchmark_gate == "pass"
             and evidence_gate == "pass"
         )
         recommendation = _candidate_decision_recommendation(
@@ -732,11 +1462,13 @@ def _build_decision_matrix(candidate_summary: pd.DataFrame) -> pd.DataFrame:
                 "candidate_role": row["candidate_role"],
                 "candidate_classification": row["candidate_classification"],
                 "candidate_label": row["candidate_label"],
-                "decision_anchor_bps": DECISION_ANCHOR_BPS,
+                "decision_anchor_bps": row["decision_anchor_bps"],
                 "average_test_return_gate": return_gate if is_primary else "reference",
                 "positive_window_gate": positive_gate if is_primary else "reference",
                 "cost_sensitivity_gate": cost_gate if is_primary else "reference",
                 "drawdown_vs_top1_gate": drawdown_gate if is_primary else "reference",
+                "historical_champion_gate": historical_gate if is_primary else "reference",
+                "benchmark_reference_gate": benchmark_gate if is_primary else "reference",
                 "evidence_scope_gate": evidence_gate if is_primary else "reference",
                 "return_strength": row["return_strength"],
                 "positive_window_strength": row["positive_window_strength"],
@@ -746,6 +1478,12 @@ def _build_decision_matrix(candidate_summary: pd.DataFrame) -> pd.DataFrame:
                 "cost_resilience_vs_drawdown_guardrail": (
                     cost_vs_guardrail if is_primary else "reference"
                 ),
+                "historical_champion_profile": (
+                    historical_profile if is_primary else "reference"
+                ),
+                "benchmark_reference_profile": (
+                    benchmark_profile if is_primary else "reference"
+                ),
                 "evidence_scope": row["evidence_scope"],
                 "promote_primary_candidate": bool(promote_primary),
                 "recommendation": recommendation,
@@ -754,6 +1492,8 @@ def _build_decision_matrix(candidate_summary: pd.DataFrame) -> pd.DataFrame:
                     row,
                     drawdown_vs_top1=drawdown_vs_top1 if is_primary else "reference",
                     cost_vs_guardrail=cost_vs_guardrail if is_primary else "reference",
+                    historical_profile=historical_profile if is_primary else "reference",
+                    benchmark_profile=benchmark_profile if is_primary else "reference",
                 ),
             }
         )
@@ -764,21 +1504,42 @@ def _apply_decision_recommendations(
     candidate_summary: pd.DataFrame,
     decision_matrix: pd.DataFrame,
 ) -> pd.DataFrame:
-    decisions = decision_matrix.set_index("candidate_role")
+    decisions = {
+        (str(row["candidate_role"]), str(row["candidate_label"])): row
+        for _, row in decision_matrix.iterrows()
+    }
     output = candidate_summary.copy()
-    output["recommendation"] = output["candidate_role"].map(decisions["recommendation"])
-    output["next_step"] = output["candidate_role"].map(decisions["next_action"])
+    output["recommendation"] = [
+        decisions.get((str(row["candidate_role"]), str(row["candidate_label"])), {}).get(
+            "recommendation",
+            "",
+        )
+        for _, row in output.iterrows()
+    ]
+    output["next_step"] = [
+        decisions.get((str(row["candidate_role"]), str(row["candidate_label"])), {}).get(
+            "next_action",
+            "",
+        )
+        for _, row in output.iterrows()
+    ]
     return output[SUMMARY_COLUMNS]
 
 
 def _build_cost_sensitivity(
     rows: pd.DataFrame,
     candidate_summary: pd.DataFrame,
+    *,
+    specs: Sequence[SelectedCandidateSpec],
 ) -> pd.DataFrame:
     summary_by_role = candidate_summary.set_index("candidate_role")
     output_rows: list[dict[str, object]] = []
-    for spec in SELECTED_CANDIDATE_SPECS:
+    for spec in specs:
+        if spec.role not in summary_by_role.index:
+            continue
         spec_rows = _match_spec(rows, spec)
+        if spec_rows.empty:
+            continue
         anchor_metrics = _metrics_from_rows(
             spec_rows.loc[_float_eq(spec_rows, "transaction_cost_bps", DECISION_ANCHOR_BPS)]
         )
@@ -804,7 +1565,11 @@ def _build_cost_sensitivity(
     return pd.DataFrame(output_rows, columns=COST_SENSITIVITY_COLUMNS)
 
 
-def _build_window_stability(rows: pd.DataFrame) -> pd.DataFrame:
+def _build_window_stability(
+    rows: pd.DataFrame,
+    *,
+    specs: Sequence[SelectedCandidateSpec],
+) -> pd.DataFrame:
     anchor = rows.loc[_float_eq(rows, "transaction_cost_bps", DECISION_ANCHOR_BPS)].copy()
     dimensions = ["train_window_years", "test_window_months"]
     if "validation_window_months" in anchor.columns:
@@ -816,8 +1581,10 @@ def _build_window_stability(rows: pd.DataFrame) -> pd.DataFrame:
             dimensions.append("validation_window_months")
 
     output_rows: list[dict[str, object]] = []
-    for spec in SELECTED_CANDIDATE_SPECS:
+    for spec in specs:
         spec_rows = _match_spec(anchor, spec)
+        if spec_rows.empty:
+            continue
         for dimension in dimensions:
             dimension_rows: list[dict[str, object]] = []
             for value, group in spec_rows.groupby(dimension, dropna=False, sort=True):
@@ -869,6 +1636,29 @@ def _build_comparison(candidate_summary: pd.DataFrame) -> pd.DataFrame:
             ),
         ),
     ]
+    historical_champion = _summary_row_optional(candidate_summary, HISTORICAL_CHAMPION_ROLE)
+    if historical_champion is not None:
+        rows.append(
+            _comparison_row(
+                comparison_name="primary_vs_historical_champion",
+                primary=primary,
+                comparison=historical_champion,
+                interpretation=_historical_comparison_interpretation(
+                    primary,
+                    historical_champion,
+                ),
+            )
+        )
+    for _, benchmark in _benchmark_summary_rows(candidate_summary).iterrows():
+        symbol = str(benchmark["benchmark_symbol"]).lower()
+        rows.append(
+            _comparison_row(
+                comparison_name=f"primary_vs_{symbol}_buy_hold",
+                primary=primary,
+                comparison=benchmark,
+                interpretation=_benchmark_comparison_interpretation(primary, benchmark),
+            )
+        )
     return pd.DataFrame(rows, columns=COMPARISON_COLUMNS)
 
 
@@ -1083,6 +1873,99 @@ def _cost_resilience_vs_guardrail(primary: pd.Series, guardrail: pd.Series) -> s
     return "weak"
 
 
+def _historical_champion_profile(
+    primary: pd.Series,
+    historical_champion: pd.Series | None,
+) -> str:
+    if historical_champion is None:
+        return "unknown"
+    worst_drawdown_delta = _delta(primary, historical_champion, "worst_max_drawdown_10bps")
+    average_drawdown_delta = _delta(
+        primary,
+        historical_champion,
+        "average_max_drawdown_10bps",
+    )
+    turnover_delta = _delta(
+        historical_champion,
+        primary,
+        "average_mean_daily_turnover_10bps",
+    )
+    cost_delta = _delta(primary, historical_champion, "cost_delta_20_vs_10")
+    drawdown_materially_better = (
+        _valid_number(worst_drawdown_delta)
+        and worst_drawdown_delta >= 0.03
+    ) or (
+        _valid_number(average_drawdown_delta)
+        and average_drawdown_delta >= 0.01
+    )
+    turnover_better = _valid_number(turnover_delta) and turnover_delta >= 0.0
+    cost_no_worse = not _valid_number(cost_delta) or cost_delta >= -0.01
+    if drawdown_materially_better and turnover_better and cost_no_worse:
+        return "strong"
+    if drawdown_materially_better and turnover_better:
+        return "moderate"
+    return "weak"
+
+
+def _benchmark_reference_profile(
+    primary: pd.Series,
+    benchmark_references: pd.DataFrame,
+) -> str:
+    if benchmark_references.empty:
+        return "unknown"
+    profiles = [
+        _single_benchmark_profile(primary, row)
+        for _, row in benchmark_references.iterrows()
+    ]
+    if profiles and all(profile == "strong" for profile in profiles):
+        return "strong"
+    if profiles and all(profile in {"strong", "moderate"} for profile in profiles):
+        return "moderate"
+    return "weak"
+
+
+def _single_benchmark_profile(primary: pd.Series, benchmark: pd.Series) -> str:
+    return_delta = _delta(primary, benchmark, "average_test_return_10bps")
+    positive_delta = _delta(primary, benchmark, "positive_window_rate_10bps")
+    sharpe_delta = _delta(primary, benchmark, "average_sharpe_like_10bps")
+    worst_drawdown_delta = _delta(primary, benchmark, "worst_max_drawdown_10bps")
+    average_drawdown_delta = _delta(primary, benchmark, "average_max_drawdown_10bps")
+    benchmark_return = abs(_as_float(benchmark["average_test_return_10bps"]))
+    raw_close_threshold = max(0.02, 0.25 * benchmark_return)
+    raw_close_or_better = _valid_number(return_delta) and return_delta >= -raw_close_threshold
+    risk_adjusted_close = (
+        _valid_number(sharpe_delta)
+        and sharpe_delta >= -0.02
+    ) or (
+        _valid_number(_as_float(primary["average_sharpe_like_10bps"]))
+        and _valid_number(_as_float(benchmark["average_sharpe_like_10bps"]))
+        and _as_float(primary["average_sharpe_like_10bps"])
+        >= 0.8 * _as_float(benchmark["average_sharpe_like_10bps"])
+    )
+    drawdown_benefit = (
+        _valid_number(worst_drawdown_delta)
+        and worst_drawdown_delta >= 0.03
+    ) or (
+        _valid_number(average_drawdown_delta)
+        and average_drawdown_delta >= 0.01
+    )
+    if (
+        _valid_number(return_delta)
+        and return_delta >= 0.02
+        and (not _valid_number(positive_delta) or positive_delta >= -0.10)
+    ):
+        return "strong"
+    if _valid_number(return_delta) and return_delta >= 0.0 and (
+        risk_adjusted_close or drawdown_benefit
+    ):
+        return "strong"
+    if raw_close_or_better and (risk_adjusted_close or drawdown_benefit):
+        return "strong"
+    if drawdown_benefit and (not _valid_number(positive_delta) or positive_delta >= -0.25):
+        return "moderate"
+    return "weak"
+
+
 def _sensitivity_rating(table: pd.DataFrame) -> str:
     if table.empty or "average_test_return" not in table.columns:
         return "unknown"
@@ -1116,6 +1999,10 @@ def _candidate_decision_recommendation(*, role: str, promote_primary: bool) -> s
         return "return reference"
     if role == DRAWDOWN_GUARDRAIL_ROLE:
         return "drawdown guardrail"
+    if role == HISTORICAL_CHAMPION_ROLE:
+        return "historical fixed-fold return champion reference"
+    if role == BENCHMARK_REFERENCE_ROLE:
+        return "buy-and-hold benchmark reference"
     return "monitor only"
 
 
@@ -1135,6 +2022,13 @@ def _candidate_next_action(*, role: str, promote_primary: bool) -> str:
         return "Keep as the return reference; do not promote by raw return alone."
     if role == DRAWDOWN_GUARDRAIL_ROLE:
         return "Keep as the drawdown-control guardrail for future challenger checks."
+    if role == HISTORICAL_CHAMPION_ROLE:
+        return (
+            "Keep visible as the historical fixed-fold / earlier return champion "
+            "reference for continuity checks."
+        )
+    if role == BENCHMARK_REFERENCE_ROLE:
+        return "Keep as an external buy-and-hold benchmark reference."
     return "Monitor only."
 
 
@@ -1143,12 +2037,16 @@ def _decision_rationale(
     *,
     drawdown_vs_top1: str,
     cost_vs_guardrail: str,
+    historical_profile: str,
+    benchmark_profile: str,
 ) -> str:
     return (
         f"return={row['return_strength']}; positive_windows="
         f"{row['positive_window_strength']}; drawdown={row['drawdown_control']}; "
         f"cost={row['cost_resilience']}; drawdown_vs_top1={drawdown_vs_top1}; "
-        f"cost_vs_guardrail={cost_vs_guardrail}; evidence={row['evidence_scope']}"
+        f"cost_vs_guardrail={cost_vs_guardrail}; "
+        f"historical_champion={historical_profile}; benchmarks={benchmark_profile}; "
+        f"evidence={row['evidence_scope']}"
     )
 
 
@@ -1191,6 +2089,12 @@ def _lookup_source_decision(
         ]
         if not anchor_matches.empty:
             matches = anchor_matches
+    elif "transaction_cost_bps" in matches.columns:
+        anchor_matches = matches.loc[
+            _float_eq(matches, "transaction_cost_bps", DECISION_ANCHOR_BPS)
+        ]
+        if not anchor_matches.empty:
+            matches = anchor_matches
     if matches.empty:
         return {}
     first = matches.iloc[0]
@@ -1228,6 +2132,22 @@ def _summary_row(summary: pd.DataFrame, role: str) -> pd.Series:
     return matches.iloc[0]
 
 
+def _summary_row_optional(summary: pd.DataFrame, role: str) -> pd.Series | None:
+    matches = summary.loc[summary["candidate_role"].astype(str).eq(role)]
+    if matches.empty:
+        return None
+    return matches.iloc[0]
+
+
+def _benchmark_summary_rows(summary: pd.DataFrame) -> pd.DataFrame:
+    matches = summary.loc[
+        summary["candidate_role"].astype(str).eq(BENCHMARK_REFERENCE_ROLE)
+    ].copy()
+    if matches.empty:
+        return pd.DataFrame(columns=summary.columns)
+    return matches.reset_index(drop=True)
+
+
 def _decision_row(decision: pd.DataFrame, role: str) -> pd.Series:
     matches = decision.loc[decision["candidate_role"].astype(str).eq(role)]
     if matches.empty:
@@ -1237,6 +2157,53 @@ def _decision_row(decision: pd.DataFrame, role: str) -> pd.Series:
 
 def _delta(left: pd.Series, right: pd.Series, column: str) -> float:
     return _as_float(left[column]) - _as_float(right[column])
+
+
+def _historical_comparison_interpretation(
+    primary: pd.Series,
+    historical_champion: pd.Series,
+) -> str:
+    drawdown_delta = _delta(primary, historical_champion, "worst_max_drawdown_10bps")
+    turnover_delta = _delta(
+        historical_champion,
+        primary,
+        "average_mean_daily_turnover_10bps",
+    )
+    return_delta = _delta(primary, historical_champion, "average_test_return_10bps")
+    pieces: list[str] = []
+    if _valid_number(return_delta) and return_delta < 0.0:
+        pieces.append("Historical champion is stronger on average raw return.")
+    elif _valid_number(return_delta):
+        pieces.append("Primary is stronger on average raw return.")
+    if _valid_number(drawdown_delta) and drawdown_delta > 0.0:
+        pieces.append("Primary improves worst drawdown versus the historical top1 reference.")
+    if _valid_number(turnover_delta) and turnover_delta >= 0.0:
+        pieces.append("Primary carries lower observed turnover.")
+    return " ".join(pieces) or "Comparison is limited by missing historical metrics."
+
+
+def _benchmark_comparison_interpretation(
+    primary: pd.Series,
+    benchmark: pd.Series,
+) -> str:
+    symbol = str(benchmark["benchmark_symbol"])
+    return_delta = _delta(primary, benchmark, "average_test_return_10bps")
+    drawdown_delta = _delta(primary, benchmark, "worst_max_drawdown_10bps")
+    sharpe_delta = _delta(primary, benchmark, "average_sharpe_like_10bps")
+    pieces: list[str] = []
+    if _valid_number(return_delta) and return_delta < -0.02:
+        pieces.append(f"{symbol} buy-and-hold is materially stronger on raw return.")
+    elif _valid_number(return_delta) and return_delta >= 0.0:
+        pieces.append(f"Primary beats {symbol} buy-and-hold on average raw return.")
+    elif _valid_number(return_delta):
+        pieces.append(f"Primary is close to {symbol} buy-and-hold on average raw return.")
+    if _valid_number(sharpe_delta) and sharpe_delta >= 0.0:
+        pieces.append("Primary is no worse on the daily Sharpe-like metric.")
+    if _valid_number(drawdown_delta) and drawdown_delta > 0.0:
+        pieces.append("Primary has the better worst drawdown.")
+    elif _valid_number(drawdown_delta):
+        pieces.append("Benchmark has the better worst drawdown.")
+    return " ".join(pieces) or f"{symbol} benchmark comparison has incomplete metrics."
 
 
 def _gate(value: bool) -> str:
@@ -1283,6 +2250,10 @@ def _format_number(value: object) -> str:
     if pd.isna(numeric):
         return "nan"
     return f"{numeric:.4f}"
+
+
+def _valid_number(value: object) -> bool:
+    return not pd.isna(_as_float(value))
 
 
 def _two_column_markdown_table(
