@@ -24,3 +24,4 @@ scripts/*_with_progress.sh
 !scripts/run_dynamic_extended_history_study.sh
 !scripts/run_expanded_dynamic_candidate_confirmation_study.sh
 !scripts/run_tiingo_modern_baseline_sweep.sh
+!scripts/run_tiingo_focused_linear_ridge_confirmation.sh
