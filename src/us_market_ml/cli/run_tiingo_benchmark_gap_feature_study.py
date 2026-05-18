@@ -67,13 +67,14 @@ from us_market_ml.experiments import (
 )
 from us_market_ml.features import (
     BENCHMARK_GAP_FEATURE_SET_VERSION,
+    BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
     DEFAULT_FEATURE_SET_VERSION,
     validate_feature_set_version,
 )
 from us_market_ml.splits import make_sliding_window_folds
 
-DEFAULT_OUTPUT_DIR = Path("artifacts/sweeps/tiingo_benchmark_gap_feature_study")
-DEFAULT_RUN_NAME = "tiingo_benchmark_gap_feature_study"
+DEFAULT_OUTPUT_DIR = Path("artifacts/sweeps/tiingo_benchmark_gap_feature_study_v2")
+DEFAULT_RUN_NAME = "tiingo_benchmark_gap_feature_study_v2"
 DEFAULT_START_DATE = "2019-01-01"
 DEFAULT_END_DATE = "2026-05-15"
 DEFAULT_STEP_MONTHS = 3
@@ -84,6 +85,7 @@ DEFAULT_TRANSACTION_COST_BPS_VALUES = (10.0,)
 DEFAULT_FEATURE_SET_VERSIONS = (
     DEFAULT_FEATURE_SET_VERSION,
     BENCHMARK_GAP_FEATURE_SET_VERSION,
+    BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
 )
 
 SWEEP_PROFILE = "benchmark_gap_feature_study"
@@ -577,6 +579,10 @@ def _render_preflight_markdown(
     feature_summary = _feature_set_preflight_summary(frame)
     candidate_summary = _candidate_preflight_summary(frame)
     fold_summary = _fold_summary(frame)
+    candidate_feature_sets = [
+        BENCHMARK_GAP_FEATURE_SET_VERSION,
+        BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
+    ]
 
     lines = [
         "# Tiingo Benchmark-Gap Feature Study Preflight",
@@ -605,7 +611,7 @@ def _render_preflight_markdown(
         "",
         f"- Feature set versions: `{list(plan.feature_set_versions)}`",
         f"- Baseline feature set: `{DEFAULT_FEATURE_SET_VERSION}`",
-        f"- Candidate feature set: `{BENCHMARK_GAP_FEATURE_SET_VERSION}`",
+        f"- Candidate feature sets: `{candidate_feature_sets}`",
         "",
         _markdown_table(
             feature_summary,
@@ -1182,4 +1188,3 @@ create_tiingo_benchmark_gap_feature_study_from_args = (
 
 if __name__ == "__main__":
     raise SystemExit(run_tiingo_benchmark_gap_feature_study_from_args())
-

@@ -11,6 +11,9 @@ from us_market_ml.cli.create_tiingo_benchmark_gap_feature_report import (
     build_tiingo_benchmark_gap_feature_report,
     run_tiingo_benchmark_gap_feature_report_from_args,
 )
+from us_market_ml.cli.create_tiingo_benchmark_gap_feature_v2_report import (
+    run_tiingo_benchmark_gap_feature_v2_report_from_args,
+)
 
 
 def test_benchmark_gap_feature_report_builds_summary_and_decision_matrix(
@@ -104,7 +107,79 @@ def test_benchmark_gap_feature_report_cli_writes_outputs(
     assert "does not export production signals" in markdown
 
 
-def _synthetic_results() -> pd.DataFrame:
+def test_benchmark_gap_feature_v2_report_compares_default_v1_and_v2(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    results_csv = tmp_path / "results.csv"
+    market_csv = tmp_path / "market.csv"
+    output_dir = tmp_path / "report"
+    _synthetic_results(
+        {
+            "default_features_v1": 0.03,
+            "benchmark_gap_features_v1": 0.05,
+            "benchmark_gap_features_v2": 0.07,
+        }
+    ).to_csv(results_csv, index=False)
+    _synthetic_market_data().to_csv(market_csv, index=False)
+
+    report_data = build_tiingo_benchmark_gap_feature_report(
+        results_csv=results_csv,
+        market_dataset_glob=market_csv,
+    )
+    v2_selected = report_data.decision_matrix.loc[
+        (report_data.decision_matrix["candidate_role"] == "selected_candidate")
+        & (
+            report_data.decision_matrix["feature_set_version"]
+            == "benchmark_gap_features_v2"
+        )
+    ].iloc[0]
+
+    assert set(report_data.feature_summary["feature_set_version"]) == {
+        "default_features_v1",
+        "benchmark_gap_features_v1",
+        "benchmark_gap_features_v2",
+    }
+    assert v2_selected["delta_strategy_vs_spy_vs_default"] == pytest.approx(0.04)
+    assert v2_selected["delta_strategy_vs_qqq_vs_default"] == pytest.approx(0.04)
+    assert v2_selected["delta_strategy_vs_spy_vs_benchmark_gap_v1"] == pytest.approx(0.02)
+    assert v2_selected["delta_strategy_vs_qqq_vs_benchmark_gap_v1"] == pytest.approx(0.02)
+    assert v2_selected["benchmark_gap_change_vs_benchmark_gap_v1"] == (
+        "improved versus v1 SPY and QQQ gaps"
+    )
+    assert v2_selected["feature_decision"] == (
+        "keep v2 for next feature-engineering iteration"
+    )
+
+    return_code = run_tiingo_benchmark_gap_feature_v2_report_from_args(
+        [
+            "--results-csv",
+            str(results_csv),
+            "--market-dataset-glob",
+            str(market_csv),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    summary_path = output_dir / "tiingo_benchmark_gap_feature_v2_summary.csv"
+    decision_path = output_dir / "tiingo_benchmark_gap_feature_v2_decision_matrix.csv"
+    markdown_path = output_dir / "tiingo_benchmark_gap_feature_v2_report.md"
+
+    assert return_code == 0
+    assert "Tiingo benchmark-gap feature v2 study report" in captured.out
+    assert summary_path.exists()
+    assert decision_path.exists()
+    assert markdown_path.exists()
+    assert "Tiingo Benchmark-Gap Feature V2 Study Report" in markdown_path.read_text(
+        encoding="utf-8"
+    )
+
+
+def _synthetic_results(
+    feature_returns: dict[str, float] | None = None,
+) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     folds = [
         ("tw1y_v1m_t3m_q01_20210101_20210110", 0.0),
@@ -114,10 +189,11 @@ def _synthetic_results() -> pd.DataFrame:
         ("selected_ridge_top5", "selected_candidate", "ridge", 5, 20, 0.005),
         ("ridge_top1_return_reference", "return_reference", "ridge", 1, 20, 0.005),
     ]
-    feature_returns = {
-        "default_features_v1": 0.03,
-        "benchmark_gap_features_v1": 0.05,
-    }
+    if feature_returns is None:
+        feature_returns = {
+            "default_features_v1": 0.03,
+            "benchmark_gap_features_v1": 0.05,
+        }
     for candidate_family, candidate_role, model_type, top_k, hold, margin in specs:
         role_adjustment = 0.0 if candidate_role == "selected_candidate" else -0.01
         for feature_set_version, base_return in feature_returns.items():
@@ -139,7 +215,7 @@ def _synthetic_results() -> pd.DataFrame:
                         "model_family": "baseline",
                         "model_type": model_type,
                         "feature_set_version": feature_set_version,
-                        "feature_count": 20 if feature_set_version == "default_features_v1" else 54,
+                        "feature_count": _synthetic_feature_count(feature_set_version),
                         "hidden_units": "none",
                         "dropout": "",
                         "scale_target": False,
@@ -174,6 +250,14 @@ def _synthetic_results() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _synthetic_feature_count(feature_set_version: str) -> int:
+    if feature_set_version == "default_features_v1":
+        return 20
+    if feature_set_version == "benchmark_gap_features_v1":
+        return 54
+    return 88
+
+
 def _synthetic_market_data() -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     dates = pd.date_range("2021-01-01", "2021-02-10", freq="D")
@@ -200,4 +284,3 @@ def _synthetic_market_data() -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows)
-

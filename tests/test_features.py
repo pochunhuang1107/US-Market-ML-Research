@@ -7,6 +7,7 @@ import pytest
 from us_market_ml.data import get_feature_columns, get_target_columns
 from us_market_ml.features import (
     BENCHMARK_GAP_FEATURE_COLUMNS,
+    BENCHMARK_GAP_V2_FEATURE_COLUMNS,
     add_cross_asset_features,
     build_feature_frame,
 )
@@ -70,6 +71,7 @@ EXPECTED_TECHNICAL_V2_COLUMNS = {
     "correlation_to_spy_60d",
 }
 EXPECTED_BENCHMARK_GAP_COLUMNS = set(BENCHMARK_GAP_FEATURE_COLUMNS)
+EXPECTED_BENCHMARK_GAP_V2_COLUMNS = set(BENCHMARK_GAP_V2_FEATURE_COLUMNS)
 
 
 def _ohlcv_frame(symbols: list[str], periods: int = 80) -> pd.DataFrame:
@@ -149,6 +151,32 @@ def test_benchmark_gap_features_v1_adds_expected_columns() -> None:
     assert "return_3d" not in feature_cols
 
 
+def test_benchmark_gap_features_v2_adds_expected_columns_and_pipeline_selects_them() -> None:
+    df = _ohlcv_frame(["SPY", "QQQ", "IWM"], periods=820)
+
+    v1_features = build_feature_frame(df, "benchmark_gap_features_v1")
+    v2_features = build_feature_frame(df, "benchmark_gap_features_v2")
+
+    assert EXPECTED_BENCHMARK_GAP_COLUMNS.issubset(v2_features.columns)
+    assert EXPECTED_BENCHMARK_GAP_V2_COLUMNS.issubset(v2_features.columns)
+    assert "return_3d" not in v2_features.columns
+    assert "volatility_5d" not in v2_features.columns
+
+    v1_feature_cols = get_feature_columns(
+        v1_features,
+        feature_set_version="benchmark_gap_features_v1",
+    )
+    v2_feature_cols = get_feature_columns(
+        v2_features,
+        feature_set_version="benchmark_gap_features_v2",
+    )
+    assert "qqq_vs_spy_return_126d" in v2_feature_cols
+    assert "is_qqq_x_qqq_return_126d_zscore_756d" in v2_feature_cols
+    assert "spy_return_63d" in v2_feature_cols
+    assert "return_3d" not in v2_feature_cols
+    assert len(v2_feature_cols) > len(v1_feature_cols)
+
+
 def test_technical_features_v2_feature_columns_exclude_targets_and_labels() -> None:
     features = build_feature_frame(
         _ohlcv_frame(["SPY", "QQQ"], periods=90),
@@ -169,8 +197,8 @@ def test_technical_features_v2_feature_columns_exclude_targets_and_labels() -> N
 
 def test_non_benchmark_gap_feature_sets_exclude_benchmark_gap_columns() -> None:
     features = build_feature_frame(
-        _ohlcv_frame(["SPY", "QQQ", "IWM"], periods=280),
-        "benchmark_gap_features_v1",
+        _ohlcv_frame(["SPY", "QQQ", "IWM"], periods=820),
+        "benchmark_gap_features_v2",
     )
 
     default_feature_cols = get_feature_columns(features, feature_set_version="default_features_v1")
@@ -181,8 +209,10 @@ def test_non_benchmark_gap_feature_sets_exclude_benchmark_gap_columns() -> None:
 
     assert "spy_return_63d" not in default_feature_cols
     assert "symbol_return_252d" not in default_feature_cols
+    assert "qqq_vs_spy_return_126d" not in default_feature_cols
     assert "spy_return_63d" not in technical_v2_feature_cols
     assert "symbol_return_252d" not in technical_v2_feature_cols
+    assert "qqq_vs_spy_return_126d" not in technical_v2_feature_cols
 
 
 def test_technical_features_v2_cross_sectional_rank_pct_columns_are_bounded() -> None:
@@ -214,9 +244,6 @@ def test_benchmark_gap_spy_qqq_features_use_same_date_trailing_history() -> None
     iwm_day = features.loc[
         (features["symbol"] == "IWM") & (features["date"] == pd.Timestamp("2024-03-04"))
     ].iloc[0]
-    spy_day = features.loc[
-        (features["symbol"] == "SPY") & (features["date"] == pd.Timestamp("2024-03-04"))
-    ].iloc[0]
     qqq_day = features.loc[
         (features["symbol"] == "QQQ") & (features["date"] == pd.Timestamp("2024-03-04"))
     ].iloc[0]
@@ -232,6 +259,96 @@ def test_benchmark_gap_spy_qqq_features_use_same_date_trailing_history() -> None
     assert qqq_day["qqq_div_spy_price_ratio_return_63d"] == pytest.approx(
         ((263.0 * 1.2) / 163.0) / ((200.0 * 1.2) / 100.0) - 1.0
     )
+
+
+def test_benchmark_gap_v2_ratio_features_are_date_aligned() -> None:
+    df = _ohlcv_frame(["SPY", "QQQ", "IWM"], periods=300)
+    df.loc[df["symbol"].eq("SPY"), "close"] = np.arange(100.0, 400.0)
+    df.loc[df["symbol"].eq("QQQ"), "close"] = np.arange(200.0, 500.0) * 1.5
+    df.loc[df["symbol"].eq("IWM"), "close"] = np.arange(50.0, 350.0) * 0.7
+
+    features = build_feature_frame(df, "benchmark_gap_features_v2")
+    date = pd.Timestamp("2024-03-04")
+    iwm_day = features.loc[(features["symbol"] == "IWM") & (features["date"] == date)].iloc[0]
+    qqq_day = features.loc[(features["symbol"] == "QQQ") & (features["date"] == date)].iloc[0]
+
+    expected_ratio_return = ((263.0 * 1.5) / 163.0) / ((200.0 * 1.5) / 100.0) - 1.0
+    assert iwm_day["qqq_vs_spy_return_63d"] == pytest.approx(expected_ratio_return)
+    assert qqq_day["qqq_vs_spy_return_63d"] == pytest.approx(expected_ratio_return)
+    assert iwm_day["qqq_vs_spy_return_63d"] == pytest.approx(
+        iwm_day["qqq_div_spy_price_ratio_return_63d"]
+    )
+
+
+def test_benchmark_gap_v2_features_do_not_use_future_rows() -> None:
+    df = _ohlcv_frame(["SPY", "QQQ", "IWM"], periods=900)
+    cutoff_date = pd.Timestamp("2025-12-01")
+    future_df = df.copy()
+    future_df.loc[future_df["date"].gt(cutoff_date), "close"] *= 10.0
+
+    base_features = build_feature_frame(df, "benchmark_gap_features_v2")
+    changed_future_features = build_feature_frame(future_df, "benchmark_gap_features_v2")
+
+    checked_columns = [
+        "qqq_vs_spy_return_zscore_252d",
+        "spy_return_63d_zscore_756d",
+        "qqq_return_126d_percentile_756d",
+        "symbol_minus_max_spy_qqq_return_126d",
+    ]
+    base_slice = base_features.loc[
+        base_features["symbol"].eq("IWM") & base_features["date"].le(cutoff_date),
+        checked_columns,
+    ].reset_index(drop=True)
+    changed_slice = changed_future_features.loc[
+        changed_future_features["symbol"].eq("IWM")
+        & changed_future_features["date"].le(cutoff_date),
+        checked_columns,
+    ].reset_index(drop=True)
+
+    pd.testing.assert_frame_equal(base_slice, changed_slice)
+
+
+def test_benchmark_gap_v2_identity_flags_are_correct() -> None:
+    df = _ohlcv_frame(["SPY", "QQQ", "XLK", "XLU", "GLD", "IWM"], periods=300)
+
+    features = build_feature_frame(df, "benchmark_gap_features_v2")
+    latest = (
+        features.sort_values(["symbol", "date"], kind="mergesort")
+        .groupby("symbol", sort=False)
+        .tail(1)
+        .set_index("symbol")
+    )
+
+    assert latest.loc["SPY", "is_spy"] == 1
+    assert latest.loc["SPY", "is_spy_or_qqq"] == 1
+    assert latest.loc["QQQ", "is_qqq"] == 1
+    assert latest.loc["QQQ", "is_growth_like_anchor"] == 1
+    assert latest.loc["XLK", "is_growth_like_anchor"] == 1
+    assert latest.loc["XLU", "is_defensive_or_bond_like"] == 1
+    assert latest.loc["GLD", "is_commodity_like"] == 1
+    assert latest.loc["IWM", "is_spy_or_qqq"] == 0
+    assert latest.loc["IWM", "is_growth_like_anchor"] == 0
+
+
+def test_benchmark_gap_v2_symbol_minus_max_spy_qqq_return_values() -> None:
+    df = _ohlcv_frame(["SPY", "QQQ", "IWM"], periods=300)
+    day_numbers = np.arange(300, dtype=float)
+    df.loc[df["symbol"].eq("SPY"), "close"] = 100.0 + day_numbers
+    df.loc[df["symbol"].eq("QQQ"), "close"] = 100.0 + day_numbers * 2.0
+    df.loc[df["symbol"].eq("IWM"), "close"] = 100.0 + day_numbers * 3.0
+
+    features = build_feature_frame(df, "benchmark_gap_features_v2")
+    iwm_day = features.loc[
+        (features["symbol"] == "IWM") & (features["date"] == pd.Timestamp("2024-03-04"))
+    ].iloc[0]
+
+    symbol_return = (100.0 + 63.0 * 3.0) / 100.0 - 1.0
+    spy_return = (100.0 + 63.0) / 100.0 - 1.0
+    qqq_return = (100.0 + 63.0 * 2.0) / 100.0 - 1.0
+    assert iwm_day["symbol_minus_max_spy_qqq_return_63d"] == pytest.approx(
+        symbol_return - max(spy_return, qqq_return)
+    )
+    assert iwm_day["symbol_return_63d_rank_vs_spy_qqq"] == pytest.approx(1.0)
 
 
 def test_benchmark_gap_expanding_return_history_is_shifted() -> None:

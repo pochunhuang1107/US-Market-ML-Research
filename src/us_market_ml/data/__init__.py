@@ -27,6 +27,8 @@ from us_market_ml.data.s3_reader import (
     read_s3_parquet_object,
 )
 from us_market_ml.features import (
+    BENCHMARK_GAP_FEATURE_SET_VERSION,
+    BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
     DEFAULT_FEATURE_SET_VERSION,
     SUPPORTED_FEATURE_SET_VERSIONS,
     TECHNICAL_FEATURE_SET_VERSION,
@@ -36,6 +38,8 @@ from us_market_ml.features import (
 
 __all__ = [
     "DEFAULT_FEATURE_SET_VERSION",
+    "BENCHMARK_GAP_FEATURE_SET_VERSION",
+    "BENCHMARK_GAP_V2_FEATURE_SET_VERSION",
     "FeatureSetConfig",
     "LocalMarketDataConfig",
     "S3MarketDataConfig",
