@@ -131,6 +131,11 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
     v2_v1_delta = artifact_data.v2_vs_v1_underperformance_delta.copy()
     v2_holdings = artifact_data.v2_selected_symbol_summary.copy()
     feature_set_version = str(summary.get("feature_set_version", "unknown"))
+    overlay_name = str(summary.get("allocation_overlay_name", "equal_weight_top5_baseline"))
+    overlay_description = str(
+        summary.get("allocation_overlay_description", "equal-weight selected top5 baseline")
+    )
+    qqq_combination = str(summary.get("qqq_core_combination_handled", "not observed"))
 
     qqq_stronger = _as_float(summary.get("qqq_average_total_return")) > _as_float(
         summary.get("strategy_average_total_return")
@@ -152,6 +157,9 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
         "benchmark artifacts.",
         "",
         f"Feature set used: `{feature_set_version}`.",
+        f"Overlay used: `{overlay_name}`.",
+        f"Overlay construction: {overlay_description}.",
+        f"QQQ core/satellite combination: {qqq_combination}.",
         f"Decision: `{summary.get('decision', 'unknown')}`.",
         f"Next action: `{summary.get('next_action', 'unknown')}`.",
         "",
@@ -171,6 +179,12 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
                     "model_type",
                     "top_k",
                     "allocation_mode",
+                    "allocation_overlay_name",
+                    "allocation_overlay_kind",
+                    "allocation_overlay_description",
+                    "allocation_overlay_core_weights",
+                    "allocation_overlay_satellite_weight",
+                    "overlay_weight_valid",
                     "min_holding_days",
                     "switch_margin",
                     "transaction_cost_bps",
@@ -189,6 +203,10 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
             )
         ),
         "",
+        "## Comparison vs equal_weight_top5_baseline",
+        "",
+        _markdown_table(_equal_weight_comparison_frame(summary)),
+        "",
         "## Comparison vs SPY and QQQ",
         "",
         _markdown_table(
@@ -200,6 +218,7 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
                     "qqq_average_total_return",
                     "average_strategy_vs_spy",
                     "average_strategy_vs_qqq",
+                    "delta_vs_equal_weight_strategy_vs_qqq",
                     "spy_underperformance_rate",
                     "qqq_underperformance_rate",
                 ],
@@ -250,6 +269,29 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
                 ].head(20)
                 if not feature_comparison.empty
                 else feature_comparison
+            )
+        ),
+        "",
+        "## Drawdown and turnover impact",
+        "",
+        _markdown_table(
+            _dict_to_frame(
+                summary,
+                [
+                    "strategy_worst_max_drawdown",
+                    "equal_weight_baseline_worst_max_drawdown",
+                    "delta_vs_equal_weight_worst_max_drawdown",
+                    "average_mean_daily_turnover",
+                    "equal_weight_baseline_average_mean_daily_turnover",
+                    "delta_vs_equal_weight_average_mean_daily_turnover",
+                    "qqq_core_weight",
+                    "satellite_weight",
+                    "qqq_holding_days",
+                    "qqq_core_only_days",
+                    "qqq_combined_core_satellite_days",
+                    "qqq_average_target_weight",
+                    "qqq_max_target_weight",
+                ],
             )
         ),
         "",
@@ -338,27 +380,96 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
         "one-row-per-symbol lag.",
         "- SPY and QQQ are buy-and-hold references, not investable blended alternatives.",
         "- This is research evidence only; it is not production-ready.",
-        "- This task did not run tree_screen, did not add MLP, and did not add "
-        "feature engineering.",
+        "- This task did not run tree_screen, did not add MLP, did not add "
+        "feature v4, did not use S3 readers, and did not export production signals.",
         "",
         "## Decision",
         "",
         f"Decision: `{summary.get('decision', 'unknown')}`.",
         "",
-        "Decision rule applied: do not promote only because the selected candidate "
-        "beats default_features_v1, benchmark_gap_features_v1, or the historical ML "
-        "champion. If v2 beats SPY on average but still trails QQQ, it is current "
-        "best research feature-set evidence, not production-ready evidence.",
+        "Decision rule applied: do not promote production-ready unless the selected "
+        "candidate beats or is very close to QQQ with acceptable drawdown. If an "
+        "allocation overlay improves the QQQ gap but still trails QQQ, classify it "
+        "as best overlay candidate rather than production-ready.",
+        "",
+        "If v2 beats SPY on average but still trails QQQ, it is current best "
+        "research feature-set evidence, not production-ready evidence.",
         "",
         "## Next action",
         "",
         f"Next action: `{summary.get('next_action', 'unknown')}`.",
         "",
-        "Allowed next-action menu considered: `feature engineering v3`, "
-        "`allocation/risk overlay`, `tree_screen`, `MLP`, `model-card draft`.",
+        "Allowed next-action menu considered: `focused overnight sweep around QQQ core sizing`, "
+        "`feature v4`, `tree_screen`, `MLP`, `model-card draft`.",
         "",
     ]
     return "\n".join(lines)
+
+
+def _equal_weight_comparison_frame(summary: dict[str, object]) -> pd.DataFrame:
+    rows = [
+        {
+            "metric": "average_total_return",
+            "overlay": summary.get("strategy_average_total_return", np.nan),
+            "equal_weight_top5_baseline": summary.get(
+                "equal_weight_baseline_average_total_return",
+                np.nan,
+            ),
+            "delta_vs_equal_weight": summary.get(
+                "delta_vs_equal_weight_average_total_return",
+                np.nan,
+            ),
+        },
+        {
+            "metric": "average_strategy_vs_spy",
+            "overlay": summary.get("average_strategy_vs_spy", np.nan),
+            "equal_weight_top5_baseline": summary.get(
+                "equal_weight_baseline_average_strategy_vs_spy",
+                np.nan,
+            ),
+            "delta_vs_equal_weight": summary.get(
+                "delta_vs_equal_weight_strategy_vs_spy",
+                np.nan,
+            ),
+        },
+        {
+            "metric": "average_strategy_vs_qqq",
+            "overlay": summary.get("average_strategy_vs_qqq", np.nan),
+            "equal_weight_top5_baseline": summary.get(
+                "equal_weight_baseline_average_strategy_vs_qqq",
+                np.nan,
+            ),
+            "delta_vs_equal_weight": summary.get(
+                "delta_vs_equal_weight_strategy_vs_qqq",
+                np.nan,
+            ),
+        },
+        {
+            "metric": "worst_max_drawdown",
+            "overlay": summary.get("strategy_worst_max_drawdown", np.nan),
+            "equal_weight_top5_baseline": summary.get(
+                "equal_weight_baseline_worst_max_drawdown",
+                np.nan,
+            ),
+            "delta_vs_equal_weight": summary.get(
+                "delta_vs_equal_weight_worst_max_drawdown",
+                np.nan,
+            ),
+        },
+        {
+            "metric": "average_mean_daily_turnover",
+            "overlay": summary.get("average_mean_daily_turnover", np.nan),
+            "equal_weight_top5_baseline": summary.get(
+                "equal_weight_baseline_average_mean_daily_turnover",
+                np.nan,
+            ),
+            "delta_vs_equal_weight": summary.get(
+                "delta_vs_equal_weight_average_mean_daily_turnover",
+                np.nan,
+            ),
+        },
+    ]
+    return _format_for_markdown(pd.DataFrame(rows))
 
 
 def _comparison_for_feature_set(

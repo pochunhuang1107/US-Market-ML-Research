@@ -18,6 +18,13 @@ from us_market_ml.backtest import (
     TopKSignalConfig,
     build_holding_periods,
     calculate_max_drawdown,
+    run_signal_backtest,
+)
+from us_market_ml.allocation_overlays import (
+    AllocationOverlaySpec,
+    apply_allocation_overlay,
+    default_allocation_overlay_specs,
+    validate_overlay_weights,
 )
 from us_market_ml.cli.create_tiingo_selected_candidate_rich_replay_report import (
     DAILY_HOLDINGS_NAME,
@@ -64,6 +71,7 @@ from us_market_ml.cli.run_tiingo_modern_baseline_sweep import (
 from us_market_ml.data import SupervisedDatasetConfig, read_local_market_data
 from us_market_ml.experiments import (
     BaselineE2EExperimentConfig,
+    BaselineE2EFoldResult,
     BaselineE2EExperimentResult,
     BaselineExperimentConfig,
     run_baseline_e2e_experiment,
@@ -86,6 +94,14 @@ DEFAULT_STEP_MONTHS = 3
 DEFAULT_TRANSACTION_COST_BPS = 10.0
 DEFAULT_BENCHMARK_SYMBOLS = ("SPY", "QQQ")
 DEFAULT_REFERENCE_FEATURE_SET_VERSIONS: tuple[str, ...] = tuple()
+DEFAULT_ALLOCATION_OVERLAY_NAME = "equal_weight_top5_baseline"
+SUPPORTED_RICH_REPLAY_ALLOCATION_OVERLAY_NAMES = (
+    "equal_weight_top5_baseline",
+    "qqq_core_30_satellite_top5",
+    "qqq_core_20_satellite_top5",
+    "spy_qqq_core_40_satellite_top5",
+    "dynamic_qqq_core_when_strong",
+)
 
 MODEL_FAMILY = "baseline"
 UNIVERSE_NAME = "tiingo_selected_candidate_rich_replay_dynamic"
@@ -347,6 +363,7 @@ def run_tiingo_selected_candidate_rich_replay_from_args(
             transaction_cost_bps=args.transaction_cost_bps,
             include_references=args.include_references,
             feature_set_version=args.feature_set_version,
+            allocation_overlay_name=args.allocation_overlay_name,
             reference_feature_set_versions=args.reference_feature_set_versions,
             min_history_rows=args.min_history_rows,
             min_train_eligible_rows=args.min_train_eligible_rows,
@@ -423,6 +440,7 @@ def build_tiingo_selected_candidate_rich_replay(
     transaction_cost_bps: float = DEFAULT_TRANSACTION_COST_BPS,
     include_references: bool = True,
     feature_set_version: str = DEFAULT_REPLAY_FEATURE_SET_VERSION,
+    allocation_overlay_name: str = DEFAULT_ALLOCATION_OVERLAY_NAME,
     reference_feature_set_versions: Sequence[str] = DEFAULT_REFERENCE_FEATURE_SET_VERSIONS,
     min_history_rows: int = DEFAULT_MIN_HISTORY_ROWS,
     min_train_eligible_rows: int = DEFAULT_MIN_TRAIN_ELIGIBLE_ROWS,
@@ -430,6 +448,7 @@ def build_tiingo_selected_candidate_rich_replay(
     """Run/replay the selected candidate and build daily-level artifacts."""
 
     feature_set_version = validate_feature_set_version(feature_set_version)
+    allocation_overlay_spec = _resolve_allocation_overlay_spec(allocation_overlay_name)
     reference_feature_set_versions = _reference_feature_set_versions(
         reference_feature_set_versions,
         primary_feature_set_version=feature_set_version,
@@ -448,13 +467,27 @@ def build_tiingo_selected_candidate_rich_replay(
 
     raw_df = read_local_market_data(market_dataset_glob)
     folds = [fold_plan.fold for fold_plan in fold_plans]
-    primary_result = _run_candidate_replay(
+    equal_weight_result = _run_candidate_replay(
         raw_df=raw_df,
         folds=folds,
         spec=PRIMARY_SPEC,
         feature_set_version=feature_set_version,
         transaction_cost_bps=transaction_cost_bps,
         min_history_rows=min_history_rows,
+    )
+    equal_weight_baseline_artifacts = _build_primary_artifacts(
+        raw_df=raw_df,
+        result=equal_weight_result,
+        fold_plans=fold_plans,
+        transaction_cost_bps=transaction_cost_bps,
+    )
+    primary_result = _apply_allocation_overlay_to_replay_result(
+        raw_df=raw_df,
+        result=equal_weight_result,
+        fold_plans=fold_plans,
+        candidate_spec=PRIMARY_SPEC,
+        allocation_overlay_spec=allocation_overlay_spec,
+        transaction_cost_bps=transaction_cost_bps,
     )
     primary_artifacts = _build_primary_artifacts(
         raw_df=raw_df,
@@ -470,6 +503,7 @@ def build_tiingo_selected_candidate_rich_replay(
         feature_set_versions=reference_feature_set_versions,
         transaction_cost_bps=transaction_cost_bps,
         min_history_rows=min_history_rows,
+        allocation_overlay_spec=allocation_overlay_spec,
     )
 
     reference_performance = pd.DataFrame(columns=REFERENCE_PERFORMANCE_COLUMNS)
@@ -481,6 +515,7 @@ def build_tiingo_selected_candidate_rich_replay(
             feature_set_version=feature_set_version,
             transaction_cost_bps=transaction_cost_bps,
             min_history_rows=min_history_rows,
+            allocation_overlay_spec=allocation_overlay_spec,
         )
     reference_feature_performance = _build_reference_feature_set_performance(
         reference_feature_artifacts=reference_feature_artifacts,
@@ -495,6 +530,8 @@ def build_tiingo_selected_candidate_rich_replay(
         primary_artifacts=primary_artifacts,
         primary_feature_set_version=feature_set_version,
         reference_feature_artifacts=reference_feature_artifacts,
+        allocation_overlay_spec=allocation_overlay_spec,
+        equal_weight_baseline_artifacts=equal_weight_baseline_artifacts,
     )
     v2_vs_v1_underperformance_delta = _build_v2_vs_v1_underperformance_delta(
         primary_artifacts=primary_artifacts,
@@ -522,6 +559,8 @@ def build_tiingo_selected_candidate_rich_replay(
         transaction_cost_bps=transaction_cost_bps,
         min_history_rows=min_history_rows,
         min_train_eligible_rows=min_train_eligible_rows,
+        allocation_overlay_spec=allocation_overlay_spec,
+        equal_weight_baseline_artifacts=equal_weight_baseline_artifacts,
     )
 
     return TiingoSelectedCandidateRichReplayArtifacts(
@@ -668,6 +707,153 @@ def _run_candidate_replay(
         ),
     )
     return run_baseline_e2e_experiment(raw_df, list(folds), config)
+
+
+def _apply_allocation_overlay_to_replay_result(
+    *,
+    raw_df: pd.DataFrame,
+    result: BaselineE2EExperimentResult,
+    fold_plans: Sequence[RichReplayFoldPlan],
+    candidate_spec: RichReplayCandidateSpec,
+    allocation_overlay_spec: AllocationOverlaySpec,
+    transaction_cost_bps: float,
+) -> BaselineE2EExperimentResult:
+    if allocation_overlay_spec.name == DEFAULT_ALLOCATION_OVERLAY_NAME:
+        return result
+
+    fold_plan_by_name = {fold_plan.fold.name: fold_plan for fold_plan in fold_plans}
+    fold_results: list[BaselineE2EFoldResult] = []
+    backtest_config = SignalBacktestConfig(
+        initial_equity=1.0,
+        transaction_cost_bps=transaction_cost_bps,
+    )
+    for fold_result in result.fold_results:
+        fold_plan = fold_plan_by_name[fold_result.fold_name]
+        train_signals = _apply_allocation_overlay_to_signals(
+            signals=fold_result.train_signals,
+            raw_df=raw_df,
+            start=fold_plan.fold.train_start,
+            end=fold_plan.fold.train_end,
+            allocation_overlay_spec=allocation_overlay_spec,
+            top_k=candidate_spec.top_k,
+        )
+        validation_signals = _apply_allocation_overlay_to_signals(
+            signals=fold_result.validation_signals,
+            raw_df=raw_df,
+            start=fold_plan.fold.validation_start,
+            end=fold_plan.fold.validation_end,
+            allocation_overlay_spec=allocation_overlay_spec,
+            top_k=candidate_spec.top_k,
+        )
+        test_signals = _apply_allocation_overlay_to_signals(
+            signals=fold_result.test_signals,
+            raw_df=raw_df,
+            start=fold_plan.fold.test_start,
+            end=fold_plan.fold.test_end,
+            allocation_overlay_spec=allocation_overlay_spec,
+            top_k=candidate_spec.top_k,
+        )
+        fold_results.append(
+            BaselineE2EFoldResult(
+                fold_name=fold_result.fold_name,
+                train_signals=train_signals,
+                validation_signals=validation_signals,
+                test_signals=test_signals,
+                train_backtest=run_signal_backtest(train_signals, backtest_config),
+                validation_backtest=run_signal_backtest(
+                    validation_signals,
+                    backtest_config,
+                ),
+                test_backtest=run_signal_backtest(test_signals, backtest_config),
+            )
+        )
+
+    return BaselineE2EExperimentResult(
+        config=result.config,
+        baseline_result=result.baseline_result,
+        fold_results=fold_results,
+    )
+
+
+def _apply_allocation_overlay_to_signals(
+    *,
+    signals: pd.DataFrame,
+    raw_df: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    allocation_overlay_spec: AllocationOverlaySpec,
+    top_k: int,
+) -> pd.DataFrame:
+    if signals.empty:
+        return signals.copy()
+    base_signals = _ensure_benchmark_signal_rows(
+        signals,
+        raw_df=raw_df,
+        start=start,
+        end=end,
+    )
+    overlay_signals = apply_allocation_overlay(
+        base_signals,
+        allocation_overlay_spec,
+        top_k=top_k,
+    )
+    if not validate_overlay_weights(overlay_signals):
+        raise ValueError(
+            f"Allocation overlay {allocation_overlay_spec.name!r} produced invalid weights."
+        )
+    return overlay_signals
+
+
+def _ensure_benchmark_signal_rows(
+    signals: pd.DataFrame,
+    *,
+    raw_df: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.DataFrame:
+    """Add zero-weight SPY/QQQ rows when eligibility filtered them out."""
+
+    if signals.empty:
+        return signals
+    out = signals.copy()
+    out["date"] = pd.to_datetime(out["date"])
+    existing = {
+        (pd.Timestamp(row.date), str(row.symbol))
+        for row in out[["date", "symbol"]].itertuples(index=False)
+    }
+    signal_dates = set(pd.to_datetime(out["date"]).dropna())
+    raw_prices = raw_df.loc[
+        (raw_df["symbol"].astype(str).isin(DEFAULT_BENCHMARK_SYMBOLS))
+        & (pd.to_datetime(raw_df["date"]) >= pd.Timestamp(start))
+        & (pd.to_datetime(raw_df["date"]) <= pd.Timestamp(end)),
+        ["date", "symbol", "close"],
+    ].copy()
+    if raw_prices.empty:
+        return out
+    raw_prices["date"] = pd.to_datetime(raw_prices["date"])
+    raw_prices = raw_prices.loc[raw_prices["date"].isin(signal_dates)]
+    raw_prices = raw_prices.drop_duplicates(subset=["date", "symbol"], keep="last")
+    rows: list[dict[str, object]] = []
+    for row in raw_prices.itertuples(index=False):
+        key = (pd.Timestamp(row.date), str(row.symbol))
+        if key in existing:
+            continue
+        new_row = {column: np.nan for column in out.columns}
+        new_row["date"] = pd.Timestamp(row.date)
+        new_row["symbol"] = str(row.symbol)
+        new_row["close"] = float(row.close)
+        new_row["prediction"] = np.nan
+        new_row["selected"] = False
+        new_row["signal_rank"] = pd.NA
+        new_row["target_weight"] = 0.0
+        rows.append(new_row)
+    if not rows:
+        return out
+    return (
+        pd.concat([out, pd.DataFrame(rows, columns=out.columns)], ignore_index=True)
+        .sort_values(["date", "symbol"], kind="mergesort")
+        .reset_index(drop=True)
+    )
 
 
 def _build_primary_artifacts(
@@ -1070,17 +1256,26 @@ def _build_reference_performance(
     feature_set_version: str,
     transaction_cost_bps: float,
     min_history_rows: int,
+    allocation_overlay_spec: AllocationOverlaySpec,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     folds = [fold_plan.fold for fold_plan in fold_plans]
     for spec in specs:
-        result = _run_candidate_replay(
+        equal_weight_result = _run_candidate_replay(
             raw_df=raw_df,
             folds=folds,
             spec=spec,
             feature_set_version=feature_set_version,
             transaction_cost_bps=transaction_cost_bps,
             min_history_rows=min_history_rows,
+        )
+        result = _apply_allocation_overlay_to_replay_result(
+            raw_df=raw_df,
+            result=equal_weight_result,
+            fold_plans=fold_plans,
+            candidate_spec=spec,
+            allocation_overlay_spec=allocation_overlay_spec,
+            transaction_cost_bps=transaction_cost_bps,
         )
         artifacts = _build_primary_artifacts(
             raw_df=raw_df,
@@ -1100,16 +1295,25 @@ def _build_reference_feature_set_artifacts(
     feature_set_versions: Sequence[str],
     transaction_cost_bps: float,
     min_history_rows: int,
+    allocation_overlay_spec: AllocationOverlaySpec,
 ) -> dict[str, _PrimaryArtifacts]:
     artifacts_by_feature_set: dict[str, _PrimaryArtifacts] = {}
     for reference_feature_set_version in feature_set_versions:
-        result = _run_candidate_replay(
+        equal_weight_result = _run_candidate_replay(
             raw_df=raw_df,
             folds=folds,
             spec=PRIMARY_SPEC,
             feature_set_version=reference_feature_set_version,
             transaction_cost_bps=transaction_cost_bps,
             min_history_rows=min_history_rows,
+        )
+        result = _apply_allocation_overlay_to_replay_result(
+            raw_df=raw_df,
+            result=equal_weight_result,
+            fold_plans=fold_plans,
+            candidate_spec=PRIMARY_SPEC,
+            allocation_overlay_spec=allocation_overlay_spec,
+            transaction_cost_bps=transaction_cost_bps,
         )
         artifacts_by_feature_set[reference_feature_set_version] = _build_primary_artifacts(
             raw_df=raw_df,
@@ -1181,23 +1385,41 @@ def _build_feature_set_comparison(
     primary_artifacts: _PrimaryArtifacts,
     primary_feature_set_version: str,
     reference_feature_artifacts: dict[str, _PrimaryArtifacts],
+    allocation_overlay_spec: AllocationOverlaySpec,
+    equal_weight_baseline_artifacts: _PrimaryArtifacts,
 ) -> pd.DataFrame:
     primary_metrics = _feature_set_metrics(primary_artifacts.fold_performance)
     rows: list[dict[str, object]] = [
         _feature_set_comparison_row(
             comparison_role="primary_selected_candidate",
             feature_set_version=primary_feature_set_version,
-            label=f"selected candidate / {primary_feature_set_version}",
+            label=(
+                f"selected candidate / {allocation_overlay_spec.name} / "
+                f"{primary_feature_set_version}"
+            ),
             metrics=primary_metrics,
             primary_metrics=primary_metrics,
         )
     ]
+    equal_weight_metrics = _feature_set_metrics(equal_weight_baseline_artifacts.fold_performance)
+    rows.append(
+        _feature_set_comparison_row(
+            comparison_role="allocation_overlay_baseline",
+            feature_set_version=primary_feature_set_version,
+            label=f"{DEFAULT_ALLOCATION_OVERLAY_NAME} / {primary_feature_set_version}",
+            metrics=equal_weight_metrics,
+            primary_metrics=primary_metrics,
+        )
+    )
     for feature_set_version, artifacts in reference_feature_artifacts.items():
         rows.append(
             _feature_set_comparison_row(
                 comparison_role="reference_selected_candidate",
                 feature_set_version=feature_set_version,
-                label=f"selected candidate / {feature_set_version}",
+                label=(
+                    f"selected candidate / {allocation_overlay_spec.name} / "
+                    f"{feature_set_version}"
+                ),
                 metrics=_feature_set_metrics(artifacts.fold_performance),
                 primary_metrics=primary_metrics,
             )
@@ -1396,27 +1618,51 @@ def _build_rich_replay_summary(
     transaction_cost_bps: float,
     min_history_rows: int,
     min_train_eligible_rows: int,
+    allocation_overlay_spec: AllocationOverlaySpec,
+    equal_weight_baseline_artifacts: _PrimaryArtifacts,
 ) -> pd.DataFrame:
     strategy_avg = _mean_or_nan(fold_performance.get("strategy_total_return"))
     spy_avg = _mean_or_nan(fold_performance.get("spy_total_return"))
     qqq_avg = _mean_or_nan(fold_performance.get("qqq_total_return"))
     avg_vs_spy = _mean_or_nan(fold_performance.get("strategy_vs_spy"))
     avg_vs_qqq = _mean_or_nan(fold_performance.get("strategy_vs_qqq"))
+    strategy_worst_drawdown = _min_or_nan(fold_performance.get("strategy_max_drawdown"))
+    average_mean_daily_turnover = _mean_or_nan(fold_performance.get("mean_daily_turnover"))
+    equal_weight_metrics = _feature_set_metrics(
+        equal_weight_baseline_artifacts.fold_performance
+    )
+    equal_weight_worst_drawdown = equal_weight_metrics["worst_max_drawdown"]
+    equal_weight_average_turnover = equal_weight_metrics["average_mean_daily_turnover"]
+    delta_vs_equal_return = strategy_avg - equal_weight_metrics["average_total_return"]
+    delta_vs_equal_spy = avg_vs_spy - equal_weight_metrics["average_strategy_vs_spy"]
+    delta_vs_equal_qqq = avg_vs_qqq - equal_weight_metrics["average_strategy_vs_qqq"]
+    delta_vs_equal_drawdown = strategy_worst_drawdown - equal_weight_worst_drawdown
+    delta_vs_equal_turnover = average_mean_daily_turnover - equal_weight_average_turnover
     spy_under_rate = _underperformance_rate(underperformance_windows, "SPY")
     qqq_under_rate = _underperformance_rate(underperformance_windows, "QQQ")
     decision = _decision(
+        allocation_overlay_name=allocation_overlay_spec.name,
         feature_set_version=feature_set_version,
         strategy_average_total_return=strategy_avg,
         average_strategy_vs_spy=avg_vs_spy,
         average_strategy_vs_qqq=avg_vs_qqq,
         spy_underperformance_rate=spy_under_rate,
         qqq_underperformance_rate=qqq_under_rate,
+        delta_vs_equal_weight_average_total_return=delta_vs_equal_return,
+        delta_vs_equal_weight_strategy_vs_qqq=delta_vs_equal_qqq,
+        delta_vs_equal_weight_worst_drawdown=delta_vs_equal_drawdown,
+        delta_vs_equal_weight_average_mean_daily_turnover=delta_vs_equal_turnover,
     )
     next_action = _next_action(
         decision,
         average_strategy_vs_qqq=avg_vs_qqq,
         feature_set_version=feature_set_version,
         feature_set_comparison=feature_set_comparison,
+        allocation_overlay_name=allocation_overlay_spec.name,
+    )
+    overlay_weight_summary = _allocation_overlay_weight_summary(
+        daily_holdings,
+        allocation_overlay_spec,
     )
     reference_lookup = {
         row.reference_role: row
@@ -1428,6 +1674,17 @@ def _build_rich_replay_summary(
         "model_type": PRIMARY_SPEC.model_type,
         "top_k": PRIMARY_SPEC.top_k,
         "allocation_mode": ALLOCATION_MODE,
+        "allocation_overlay_name": allocation_overlay_spec.name,
+        "allocation_overlay_kind": allocation_overlay_spec.kind,
+        "allocation_overlay_description": _allocation_overlay_description(
+            allocation_overlay_spec
+        ),
+        "allocation_overlay_core_weights": _format_core_weights(allocation_overlay_spec),
+        "allocation_overlay_satellite_weight": (
+            float(allocation_overlay_spec.satellite_weight)
+            if allocation_overlay_spec.satellite_weight is not None
+            else np.nan
+        ),
         "min_holding_days": PRIMARY_SPEC.min_holding_days,
         "switch_margin": PRIMARY_SPEC.switch_margin,
         "transaction_cost_bps": transaction_cost_bps,
@@ -1454,6 +1711,37 @@ def _build_rich_replay_summary(
         "qqq_average_total_return": qqq_avg,
         "average_strategy_vs_spy": avg_vs_spy,
         "average_strategy_vs_qqq": avg_vs_qqq,
+        "equal_weight_baseline_average_total_return": (
+            equal_weight_metrics["average_total_return"]
+        ),
+        "equal_weight_baseline_average_strategy_vs_spy": (
+            equal_weight_metrics["average_strategy_vs_spy"]
+        ),
+        "equal_weight_baseline_average_strategy_vs_qqq": (
+            equal_weight_metrics["average_strategy_vs_qqq"]
+        ),
+        "equal_weight_baseline_worst_max_drawdown": equal_weight_worst_drawdown,
+        "equal_weight_baseline_average_mean_daily_turnover": (
+            equal_weight_average_turnover
+        ),
+        "delta_vs_equal_weight_average_total_return": delta_vs_equal_return,
+        "delta_vs_equal_weight_strategy_vs_spy": delta_vs_equal_spy,
+        "delta_vs_equal_weight_strategy_vs_qqq": delta_vs_equal_qqq,
+        "delta_vs_equal_weight_worst_max_drawdown": delta_vs_equal_drawdown,
+        "delta_vs_equal_weight_average_mean_daily_turnover": delta_vs_equal_turnover,
+        "overlay_weight_valid": _daily_holdings_weight_valid(daily_holdings),
+        "qqq_core_weight": overlay_weight_summary["qqq_core_weight"],
+        "satellite_weight": overlay_weight_summary["satellite_weight"],
+        "qqq_holding_days": overlay_weight_summary["qqq_holding_days"],
+        "qqq_core_only_days": overlay_weight_summary["qqq_core_only_days"],
+        "qqq_combined_core_satellite_days": (
+            overlay_weight_summary["qqq_combined_core_satellite_days"]
+        ),
+        "qqq_average_target_weight": overlay_weight_summary["qqq_average_target_weight"],
+        "qqq_max_target_weight": overlay_weight_summary["qqq_max_target_weight"],
+        "qqq_core_combination_handled": (
+            overlay_weight_summary["qqq_core_combination_handled"]
+        ),
         "strategy_average_sharpe_like": _mean_or_nan(
             fold_performance.get("strategy_sharpe_like")
         ),
@@ -1463,6 +1751,7 @@ def _build_rich_replay_summary(
         "strategy_worst_max_drawdown": _min_or_nan(
             fold_performance.get("strategy_max_drawdown")
         ),
+        "average_mean_daily_turnover": average_mean_daily_turnover,
         "spy_average_max_drawdown": _mean_or_nan(fold_performance.get("spy_max_drawdown")),
         "qqq_average_max_drawdown": _mean_or_nan(fold_performance.get("qqq_max_drawdown")),
         "spy_underperformance_rate": spy_under_rate,
@@ -1541,6 +1830,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="Feature set used for the primary selected-candidate replay.",
     )
     parser.add_argument(
+        "--allocation-overlay-name",
+        default=os.environ.get("ALLOCATION_OVERLAY_NAME", DEFAULT_ALLOCATION_OVERLAY_NAME),
+        help=(
+            "Allocation overlay applied after selected top5 smoothing. Supported values: "
+            + ", ".join(SUPPORTED_RICH_REPLAY_ALLOCATION_OVERLAY_NAMES)
+            + "."
+        ),
+    )
+    parser.add_argument(
         "--reference-feature-set-versions",
         nargs="+",
         default=_env_values("REFERENCE_FEATURE_SET_VERSIONS"),
@@ -1604,6 +1902,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
             str(args.feature_set_version),
             "--feature-set-version",
         )
+        args.allocation_overlay_name = _parse_allocation_overlay_name(
+            str(args.allocation_overlay_name),
+            "--allocation-overlay-name",
+        )
         args.reference_feature_set_versions = (
             _parse_feature_set_version_values(
                 args.reference_feature_set_versions,
@@ -1655,6 +1957,7 @@ def _print_plan(
     print("uses GPU: false")
     print("includes MLP: false")
     print("includes tree models: false")
+    print("exports production signals: false")
     print(f"dry_run: {dry_run}")
     print(f"dataset glob: {args.market_dataset_glob}")
     print(f"dataset source label: {DATASET_SOURCE_LABEL}")
@@ -1674,6 +1977,12 @@ def _print_plan(
     print(f"model_type: {PRIMARY_SPEC.model_type}")
     print(f"top_k: {PRIMARY_SPEC.top_k}")
     print(f"allocation_mode: {ALLOCATION_MODE}")
+    allocation_overlay_spec = _resolve_allocation_overlay_spec(args.allocation_overlay_name)
+    print(f"allocation_overlay_name: {allocation_overlay_spec.name}")
+    print(
+        "allocation_overlay_description: "
+        f"{_allocation_overlay_description(allocation_overlay_spec)}"
+    )
     print(f"min_holding_days: {PRIMARY_SPEC.min_holding_days}")
     print(f"switch_margin: {PRIMARY_SPEC.switch_margin:g}")
     print(f"universe_mode: {UNIVERSE_MODE}")
@@ -1682,6 +1991,10 @@ def _print_plan(
     print(f"min_train_eligible_rows: {args.min_train_eligible_rows}")
     print(f"target_col: {TARGET_COL}")
     print(f"label_horizon_days: {LABEL_HORIZON_DAYS}")
+    print("tree_screen: not run")
+    print("MLP: not run")
+    print("feature v4: not added")
+    print("production signal export: not run")
     print(f"output directory: {output_dir}")
     print("output paths:")
     for output_name in output_names:
@@ -1712,6 +2025,8 @@ def _equivalent_command(args: argparse.Namespace) -> list[str]:
         str(args.transaction_cost_bps),
         "--feature-set-version",
         str(args.feature_set_version),
+        "--allocation-overlay-name",
+        str(args.allocation_overlay_name),
         "--min-history-rows",
         str(args.min_history_rows),
         "--min-train-eligible-rows",
@@ -1807,15 +2122,184 @@ def _underperformance_rate(frame: pd.DataFrame, symbol: str) -> float:
     return float(rows["underperformed_benchmark"].astype(bool).mean())
 
 
+def _allocation_overlay_weight_summary(
+    daily_holdings: pd.DataFrame,
+    allocation_overlay_spec: AllocationOverlaySpec,
+) -> dict[str, object]:
+    qqq_core_weight = _core_weight_for_symbol(allocation_overlay_spec, "QQQ")
+    satellite_weight = (
+        float(allocation_overlay_spec.satellite_weight)
+        if allocation_overlay_spec.satellite_weight is not None
+        else np.nan
+    )
+    if daily_holdings.empty or "symbol" not in daily_holdings.columns:
+        return {
+            "qqq_core_weight": qqq_core_weight,
+            "satellite_weight": satellite_weight,
+            "qqq_holding_days": 0,
+            "qqq_core_only_days": 0,
+            "qqq_combined_core_satellite_days": 0,
+            "qqq_average_target_weight": np.nan,
+            "qqq_max_target_weight": np.nan,
+            "qqq_core_combination_handled": "not observed",
+        }
+
+    qqq_holdings = daily_holdings.loc[
+        daily_holdings["symbol"].astype(str).str.upper().eq("QQQ")
+    ].copy()
+    if qqq_holdings.empty:
+        return {
+            "qqq_core_weight": qqq_core_weight,
+            "satellite_weight": satellite_weight,
+            "qqq_holding_days": 0,
+            "qqq_core_only_days": 0,
+            "qqq_combined_core_satellite_days": 0,
+            "qqq_average_target_weight": np.nan,
+            "qqq_max_target_weight": np.nan,
+            "qqq_core_combination_handled": (
+                "not applicable" if qqq_core_weight <= 0.0 else "QQQ core not observed"
+            ),
+        }
+
+    qqq_weights = pd.to_numeric(qqq_holdings["target_weight"], errors="coerce").dropna()
+    if qqq_weights.empty:
+        average_weight = np.nan
+        max_weight = np.nan
+    else:
+        average_weight = float(qqq_weights.mean())
+        max_weight = float(qqq_weights.max())
+    combined_days = (
+        int((qqq_weights > qqq_core_weight + 1.0e-9).sum())
+        if qqq_core_weight > 0.0
+        else 0
+    )
+    core_only_days = (
+        int(np.isclose(qqq_weights, qqq_core_weight, atol=1.0e-9).sum())
+        if qqq_core_weight > 0.0
+        else 0
+    )
+    if qqq_core_weight <= 0.0:
+        combination_status = "not applicable"
+    elif combined_days > 0:
+        combination_status = (
+            "yes - QQQ core weight is combined with satellite weight when QQQ is selected"
+        )
+    elif len(qqq_holdings) > 0:
+        combination_status = "QQQ core added when outside the selected top5"
+    else:
+        combination_status = "QQQ core not observed"
+    return {
+        "qqq_core_weight": qqq_core_weight,
+        "satellite_weight": satellite_weight,
+        "qqq_holding_days": int(len(qqq_holdings)),
+        "qqq_core_only_days": core_only_days,
+        "qqq_combined_core_satellite_days": combined_days,
+        "qqq_average_target_weight": average_weight,
+        "qqq_max_target_weight": max_weight,
+        "qqq_core_combination_handled": combination_status,
+    }
+
+
+def _daily_holdings_weight_valid(daily_holdings: pd.DataFrame) -> bool:
+    if daily_holdings.empty:
+        return False
+    required_columns = {"fold", "date", "target_weight"}
+    if not required_columns.issubset(daily_holdings.columns):
+        return False
+    sums = (
+        daily_holdings.assign(
+            target_weight=pd.to_numeric(daily_holdings["target_weight"], errors="coerce")
+        )
+        .groupby(["fold", "date"], sort=False)["target_weight"]
+        .sum()
+    )
+    return bool(np.isclose(sums, 1.0, atol=1.0e-9).all())
+
+
+def _core_weight_for_symbol(
+    allocation_overlay_spec: AllocationOverlaySpec,
+    symbol: str,
+) -> float:
+    symbol_upper = symbol.upper()
+    return float(
+        sum(
+            weight
+            for core_symbol, weight in allocation_overlay_spec.core_weights
+            if str(core_symbol).upper() == symbol_upper
+        )
+    )
+
+
+def _format_core_weights(allocation_overlay_spec: AllocationOverlaySpec) -> str:
+    if not allocation_overlay_spec.core_weights:
+        return ""
+    return ",".join(
+        f"{symbol}:{float(weight):g}"
+        for symbol, weight in allocation_overlay_spec.core_weights
+    )
+
+
+def _allocation_overlay_description(
+    allocation_overlay_spec: AllocationOverlaySpec,
+) -> str:
+    if allocation_overlay_spec.name == "qqq_core_30_satellite_top5":
+        return "30% QQQ core plus 70% selected top5 satellite"
+    if allocation_overlay_spec.name == "qqq_core_20_satellite_top5":
+        return "20% QQQ core plus 80% selected top5 satellite"
+    if allocation_overlay_spec.name == "spy_qqq_core_40_satellite_top5":
+        return "20% SPY core plus 20% QQQ core plus 60% selected top5 satellite"
+    if allocation_overlay_spec.name == "dynamic_qqq_core_when_strong":
+        return "30% QQQ core plus 70% selected top5 satellite when QQQ regime is strong"
+    return "equal-weight selected top5 baseline"
+
+
 def _decision(
     *,
+    allocation_overlay_name: str,
     feature_set_version: str,
     strategy_average_total_return: float,
     average_strategy_vs_spy: float,
     average_strategy_vs_qqq: float,
     spy_underperformance_rate: float,
     qqq_underperformance_rate: float,
+    delta_vs_equal_weight_average_total_return: float,
+    delta_vs_equal_weight_strategy_vs_qqq: float,
+    delta_vs_equal_weight_worst_drawdown: float,
+    delta_vs_equal_weight_average_mean_daily_turnover: float,
 ) -> str:
+    if allocation_overlay_name != DEFAULT_ALLOCATION_OVERLAY_NAME:
+        drawdown_worsened_too_much = (
+            np.isfinite(delta_vs_equal_weight_worst_drawdown)
+            and delta_vs_equal_weight_worst_drawdown < -0.03
+        )
+        turnover_worsened_too_much = (
+            np.isfinite(delta_vs_equal_weight_average_mean_daily_turnover)
+            and delta_vs_equal_weight_average_mean_daily_turnover > 0.03
+        )
+        improves_qqq_gap = (
+            np.isfinite(delta_vs_equal_weight_strategy_vs_qqq)
+            and delta_vs_equal_weight_strategy_vs_qqq > 0.0
+        )
+        improves_return = (
+            np.isfinite(delta_vs_equal_weight_average_total_return)
+            and delta_vs_equal_weight_average_total_return > 0.0
+        )
+        if (
+            strategy_average_total_return < 0.0
+            and average_strategy_vs_spy < 0.0
+            and average_strategy_vs_qqq < 0.0
+        ):
+            return "reject/deprioritize"
+        if (
+            average_strategy_vs_spy > 0.0
+            and improves_qqq_gap
+            and improves_return
+            and not drawdown_worsened_too_much
+            and not turnover_worsened_too_much
+        ):
+            return "keep as best overlay candidate"
+        return "keep selected candidate but not target"
+
     if (
         average_strategy_vs_spy > 0.0
         and average_strategy_vs_qqq > 0.0
@@ -1844,7 +2328,10 @@ def _next_action(
     average_strategy_vs_qqq: float,
     feature_set_version: str,
     feature_set_comparison: pd.DataFrame,
+    allocation_overlay_name: str,
 ) -> str:
+    if decision == "keep as best overlay candidate":
+        return "focused overnight sweep around QQQ core sizing"
     if decision == "promote as current research baseline target":
         return "model-card draft"
     if (
@@ -1852,10 +2339,18 @@ def _next_action(
         and _v2_improves_qqq_gap_vs_v1(feature_set_comparison)
     ):
         if np.isfinite(average_strategy_vs_qqq) and average_strategy_vs_qqq < 0.0:
-            return "feature engineering v3"
+            return (
+                "focused overnight sweep around QQQ core sizing"
+                if allocation_overlay_name != DEFAULT_ALLOCATION_OVERLAY_NAME
+                else "feature v4"
+            )
         return "allocation/risk overlay"
     if np.isfinite(average_strategy_vs_qqq) and average_strategy_vs_qqq < 0.0:
-        return "feature engineering v3"
+        return (
+            "focused overnight sweep around QQQ core sizing"
+            if allocation_overlay_name != DEFAULT_ALLOCATION_OVERLAY_NAME
+            else "feature v4"
+        )
     return "allocation/risk overlay"
 
 
@@ -1978,6 +2473,31 @@ def _parse_feature_set_version_values(
     if not parsed_values:
         raise argparse.ArgumentTypeError(f"{parameter_name} requires at least one value.")
     return tuple(dict.fromkeys(parsed_values))
+
+
+def _parse_allocation_overlay_name(value: str, parameter_name: str) -> str:
+    stripped = str(value).strip()
+    if not stripped:
+        raise argparse.ArgumentTypeError(f"{parameter_name} requires a non-empty value.")
+    try:
+        return _resolve_allocation_overlay_spec(stripped).name
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _resolve_allocation_overlay_spec(name: str) -> AllocationOverlaySpec:
+    supported_specs = {
+        spec.name: spec
+        for spec in default_allocation_overlay_specs()
+        if spec.name in SUPPORTED_RICH_REPLAY_ALLOCATION_OVERLAY_NAMES
+    }
+    try:
+        return supported_specs[name]
+    except KeyError as exc:
+        supported = ", ".join(SUPPORTED_RICH_REPLAY_ALLOCATION_OVERLAY_NAMES)
+        raise ValueError(
+            f"Unsupported allocation overlay {name!r}. Supported values: {supported}."
+        ) from exc
 
 
 def _reference_feature_set_versions(
