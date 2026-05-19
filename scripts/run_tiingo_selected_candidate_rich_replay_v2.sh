@@ -33,6 +33,7 @@ main() {
   TEST_WINDOW_MONTHS="${TEST_WINDOW_MONTHS:-3 6 12}"
   TRANSACTION_COST_BPS="${TRANSACTION_COST_BPS:-10}"
   FEATURE_SET_VERSION="${FEATURE_SET_VERSION:-benchmark_gap_features_v2}"
+  ALLOCATION_OVERLAY_NAME="${ALLOCATION_OVERLAY_NAME:-equal_weight_top5_baseline}"
   REFERENCE_FEATURE_SET_VERSIONS="${REFERENCE_FEATURE_SET_VERSIONS:-default_features_v1 benchmark_gap_features_v1}"
   MIN_HISTORY_ROWS="${MIN_HISTORY_ROWS:-252}"
   MIN_TRAIN_ELIGIBLE_ROWS="${MIN_TRAIN_ELIGIBLE_ROWS:-5000}"
@@ -51,6 +52,7 @@ main() {
     --step-months "$STEP_MONTHS"
     --transaction-cost-bps "$TRANSACTION_COST_BPS"
     --feature-set-version "$FEATURE_SET_VERSION"
+    --allocation-overlay-name "$ALLOCATION_OVERLAY_NAME"
     --min-history-rows "$MIN_HISTORY_ROWS"
     --min-train-eligible-rows "$MIN_TRAIN_ELIGIBLE_ROWS"
   )

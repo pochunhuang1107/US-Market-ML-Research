@@ -4,6 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from us_market_ml.cli.run_tiingo_selected_candidate_rich_replay import (
@@ -13,6 +14,8 @@ from us_market_ml.cli.run_tiingo_selected_candidate_rich_replay import (
     REBALANCE_LOG_COLUMNS,
     SELECTED_SYMBOL_SUMMARY_COLUMNS,
     UNDERPERFORMANCE_WINDOWS_COLUMNS,
+    _apply_allocation_overlay_to_signals,
+    _resolve_allocation_overlay_spec,
     build_tiingo_selected_candidate_rich_replay,
     build_tiingo_selected_candidate_rich_replay_folds,
     run_tiingo_selected_candidate_rich_replay_from_args,
@@ -189,9 +192,177 @@ def test_rich_replay_cli_accepts_feature_set_version_in_dry_run(
 
     assert return_code == 0
     assert "feature_set_version: benchmark_gap_features_v2" in captured.out
+    assert "allocation_overlay_name: equal_weight_top5_baseline" in captured.out
     assert "reference_feature_set_versions" in captured.out
     assert "--feature-set-version" in captured.out
+    assert "--allocation-overlay-name" in captured.out
     assert "benchmark_gap_features_v2" in captured.out
+    assert "production signal export: not run" in captured.out
+
+
+def test_rich_replay_cli_accepts_allocation_overlay_name_in_dry_run(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    data_path = tmp_path / "market.csv"
+    _synthetic_market_data().to_csv(data_path, index=False)
+    output_dir = tmp_path / "replay"
+
+    return_code = run_tiingo_selected_candidate_rich_replay_from_args(
+        [
+            "--market-dataset-glob",
+            str(data_path),
+            "--output-dir",
+            str(output_dir),
+            "--start-date",
+            "2020-01-01",
+            "--end-date",
+            "2021-04-30",
+            "--train-window-years",
+            "1",
+            "--validation-window-months",
+            "1",
+            "--test-window-months",
+            "3",
+            "--step-months",
+            "6",
+            "--feature-set-version",
+            "benchmark_gap_features_v3",
+            "--allocation-overlay-name",
+            "qqq_core_30_satellite_top5",
+            "--dry-run",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert return_code == 0
+    assert "allocation_overlay_name: qqq_core_30_satellite_top5" in captured.out
+    assert "30% QQQ core plus 70% selected top5 satellite" in captured.out
+    assert "--allocation-overlay-name" in captured.out
+    assert "uses S3/cloud: false" in captured.out
+    assert "includes MLP: false" in captured.out
+    assert "includes tree models: false" in captured.out
+    assert "tree_screen: not run" in captured.out
+    assert "feature v4: not added" in captured.out
+    assert "production signal export: not run" in captured.out
+
+
+def test_rich_replay_qqq_core30_overlay_writes_outputs_and_adds_qqq_core(
+    tmp_path: Path,
+) -> None:
+    data_path = tmp_path / "market.csv"
+    market = _synthetic_market_data(boost_qqq=True)
+    market = market.loc[~market["symbol"].eq("VNQ")]
+    market.to_csv(data_path, index=False)
+    output_dir = tmp_path / "replay_core30"
+
+    return_code = run_tiingo_selected_candidate_rich_replay_from_args(
+        [
+            "--market-dataset-glob",
+            str(data_path),
+            "--output-dir",
+            str(output_dir),
+            "--start-date",
+            "2020-01-01",
+            "--end-date",
+            "2021-04-30",
+            "--train-window-years",
+            "1",
+            "--validation-window-months",
+            "1",
+            "--test-window-months",
+            "3",
+            "--step-months",
+            "6",
+            "--transaction-cost-bps",
+            "10",
+            "--feature-set-version",
+            "benchmark_gap_features_v3",
+            "--allocation-overlay-name",
+            "qqq_core_30_satellite_top5",
+            "--no-include-references",
+            "--min-history-rows",
+            "5",
+            "--min-train-eligible-rows",
+            "1",
+        ]
+    )
+
+    required_names = [
+        "daily_strategy_equity.csv",
+        "daily_holdings.csv",
+        "rebalance_log.csv",
+        "trade_turnover_diagnostics.csv",
+        "fold_performance.csv",
+        "underperformance_windows.csv",
+        "selected_symbol_summary.csv",
+        "rich_replay_summary.csv",
+        "reference_performance.csv",
+        "feature_set_comparison.csv",
+        "rich_replay_report.md",
+    ]
+    for name in required_names:
+        assert (output_dir / name).exists()
+
+    daily_holdings = pd.read_csv(output_dir / "daily_holdings.csv")
+    summary = pd.read_csv(output_dir / "rich_replay_summary.csv")
+    comparison = pd.read_csv(output_dir / "feature_set_comparison.csv")
+    markdown = (output_dir / "rich_replay_report.md").read_text(encoding="utf-8")
+
+    qqq_holdings = daily_holdings.loc[daily_holdings["symbol"].eq("QQQ")]
+    weight_sums = daily_holdings.groupby(["fold", "date"])["target_weight"].sum()
+
+    assert return_code == 0
+    assert not qqq_holdings.empty
+    assert np.isclose(qqq_holdings["target_weight"].max(), 0.30)
+    assert np.allclose(weight_sums.to_numpy(), 1.0)
+    assert summary.loc[0, "allocation_overlay_name"] == "qqq_core_30_satellite_top5"
+    assert summary.loc[0, "overlay_weight_valid"]
+    assert summary.loc[0, "qqq_core_only_days"] > 0
+    assert "allocation_overlay_baseline" in set(comparison["comparison_role"])
+    assert "qqq_core_30_satellite_top5" in markdown
+    assert "30% QQQ core plus 70% selected top5 satellite" in markdown
+    assert "equal_weight_top5_baseline" in markdown
+    assert "SPY buy-and-hold" in markdown
+    assert "QQQ buy-and-hold" in markdown
+    assert "not production-ready" in markdown
+    assert "did not run tree_screen" in markdown
+    assert "did not add MLP" in markdown
+    assert "did not use S3 readers" in markdown
+    assert "did not export production signals" in markdown
+
+
+def test_rich_replay_overlay_helper_combines_qqq_core_when_already_selected() -> None:
+    signals = pd.DataFrame(
+        [
+            {
+                "date": "2021-01-04",
+                "symbol": symbol,
+                "close": 100.0 + index,
+                "prediction": 1.0 - index * 0.01,
+                "signal_rank": index + 1,
+                "selected": True,
+                "target_weight": 0.20,
+            }
+            for index, symbol in enumerate(["QQQ", "TLT", "IWM", "GLD", "SPY"])
+        ]
+    )
+    overlay_signals = _apply_allocation_overlay_to_signals(
+        signals=signals,
+        raw_df=signals[["date", "symbol", "close"]].copy(),
+        start=pd.Timestamp("2021-01-04"),
+        end=pd.Timestamp("2021-01-04"),
+        allocation_overlay_spec=_resolve_allocation_overlay_spec(
+            "qqq_core_30_satellite_top5"
+        ),
+        top_k=5,
+    )
+    selected = overlay_signals.loc[overlay_signals["selected"]].copy()
+    qqq_weight = float(selected.loc[selected["symbol"].eq("QQQ"), "target_weight"].iloc[0])
+
+    assert np.isclose(qqq_weight, 0.44)
+    assert np.isclose(selected["target_weight"].sum(), 1.0)
 
 
 def test_rich_replay_writes_expected_files_with_benchmark_gap_features_v2(
@@ -272,8 +443,10 @@ def test_rich_replay_shell_runner_is_local_and_executable() -> None:
     assert "TEST_WINDOW_MONTHS=" in script
     assert "TRANSACTION_COST_BPS=" in script
     assert "FEATURE_SET_VERSION=" in script
+    assert "ALLOCATION_OVERLAY_NAME=" in script
     assert "run_tiingo_selected_candidate_rich_replay" in script
     assert "--feature-set-version" in script
+    assert "--allocation-overlay-name" in script
     assert "--dry-run" in script
     assert "Equivalent Python command" in script
     assert "No S3/cloud/GPU" in script
@@ -306,9 +479,12 @@ def test_rich_replay_v2_shell_runner_is_local_and_executable() -> None:
     assert "tiingo_selected_candidate_rich_replay_v2" in script
     assert "FEATURE_SET_VERSION=" in script
     assert "benchmark_gap_features_v2" in script
+    assert "ALLOCATION_OVERLAY_NAME=" in script
+    assert "equal_weight_top5_baseline" in script
     assert "REFERENCE_FEATURE_SET_VERSIONS=" in script
     assert "default_features_v1 benchmark_gap_features_v1" in script
     assert "--feature-set-version" in script
+    assert "--allocation-overlay-name" in script
     assert "--reference-feature-set-versions" in script
     assert "--dry-run" in script
     assert "No S3/cloud/GPU" in script
@@ -331,9 +507,49 @@ def test_rich_replay_v2_shell_runner_is_local_and_executable() -> None:
     )
 
 
+def test_rich_replay_v3_qqq_core30_shell_runner_is_local_and_executable() -> None:
+    script_path = Path("scripts/run_tiingo_v3_qqq_core30_rich_replay.sh")
+    script = script_path.read_text(encoding="utf-8")
+
+    assert os.access(script_path, os.X_OK)
+    assert "set -euo pipefail" in script
+    assert "OUTPUT_DIR=" in script
+    assert "tiingo_v3_qqq_core30_rich_replay" in script
+    assert "FEATURE_SET_VERSION=" in script
+    assert "benchmark_gap_features_v3" in script
+    assert "ALLOCATION_OVERLAY_NAME=" in script
+    assert "qqq_core_30_satellite_top5" in script
+    assert "--feature-set-version" in script
+    assert "--allocation-overlay-name" in script
+    assert "--dry-run" in script
+    assert "DRY_RUN=1" in script
+    assert "No S3/cloud/GPU" in script
+    assert "no MLP" in script
+    assert "no tree models" in script
+    assert "no tree_screen" in script
+    assert "no feature v4" in script
+    assert "no production signal export" in script
+
+    subprocess.run(["bash", "-n", str(script_path)], check=True)
+    subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                "TIINGO_SELECTED_CANDIDATE_RICH_REPLAY_TEST_HELPERS=1; "
+                "source scripts/run_tiingo_v3_qqq_core30_rich_replay.sh; "
+                "declare -f append_values_arg >/dev/null"
+            ),
+        ],
+        check=True,
+    )
+
+
 def _synthetic_market_data(
     start: str = "2020-01-01",
     end: str = "2021-04-30",
+    *,
+    boost_qqq: bool = False,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     dates = pd.date_range(start, end, freq="D")
@@ -341,6 +557,8 @@ def _synthetic_market_data(
     for symbol_index, symbol in enumerate(symbols):
         base_price = 100.0 + symbol_index * 12.0
         drift = 0.08 + symbol_index * 0.015
+        if boost_qqq and symbol == "QQQ":
+            drift = 0.28
         cycle = symbol_index + 2
         for day_index, date in enumerate(dates):
             close = base_price + day_index * drift + (day_index % 19) * cycle * 0.025
