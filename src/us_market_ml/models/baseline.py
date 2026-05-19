@@ -18,8 +18,13 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import ExtraTreesRegressor, GradientBoostingRegressor, RandomForestRegressor
-from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.ensemble import (
+    ExtraTreesRegressor,
+    GradientBoostingRegressor,
+    HistGradientBoostingRegressor,
+    RandomForestRegressor,
+)
+from sklearn.linear_model import ElasticNet, HuberRegressor, LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
@@ -30,6 +35,7 @@ class BaselineModelConfig:
     model_type: str = "ridge"
     random_state: int = 42
     alpha: float = 1.0
+    l1_ratio: float = 0.5
     n_estimators: int = 100
     max_depth: int | None = None
     learning_rate: float = 0.05
@@ -40,6 +46,8 @@ class BaselineModelConfig:
     def __post_init__(self) -> None:
         if self.learning_rate <= 0:
             raise ValueError("learning_rate must be greater than 0.")
+        if not 0.0 <= self.l1_ratio <= 1.0:
+            raise ValueError("l1_ratio must satisfy 0 <= value <= 1.")
         if not 0 < self.subsample <= 1:
             raise ValueError("subsample must be greater than 0 and less than or equal to 1.")
         if self.min_samples_leaf <= 0:
@@ -70,6 +78,15 @@ def create_baseline_model(config: BaselineModelConfig) -> Any:
         return Ridge(alpha=config.alpha, random_state=config.random_state)
     if config.model_type == "linear_regression":
         return LinearRegression()
+    if config.model_type == "elasticnet":
+        return ElasticNet(
+            alpha=config.alpha,
+            l1_ratio=config.l1_ratio,
+            random_state=config.random_state,
+            max_iter=10_000,
+        )
+    if config.model_type == "huber_regression":
+        return HuberRegressor(alpha=config.alpha, max_iter=1_000)
     if config.model_type == "random_forest":
         return RandomForestRegressor(
             n_estimators=config.n_estimators,
@@ -94,8 +111,21 @@ def create_baseline_model(config: BaselineModelConfig) -> Any:
             random_state=config.random_state,
             n_jobs=-1,
         )
+    if config.model_type == "hist_gradient_boosting":
+        return HistGradientBoostingRegressor(
+            learning_rate=config.learning_rate,
+            max_iter=config.n_estimators,
+            max_leaf_nodes=None,
+            max_depth=config.max_depth,
+            l2_regularization=config.alpha,
+            min_samples_leaf=config.min_samples_leaf,
+            random_state=config.random_state,
+        )
 
-    supported = "ridge, linear_regression, random_forest, gradient_boosting, extra_trees"
+    supported = (
+        "ridge, linear_regression, elasticnet, huber_regression, random_forest, "
+        "gradient_boosting, extra_trees, hist_gradient_boosting"
+    )
     raise ValueError(
         f"Unsupported baseline model_type {config.model_type!r}; expected one of: {supported}."
     )

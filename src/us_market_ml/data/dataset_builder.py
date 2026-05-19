@@ -25,6 +25,8 @@ from us_market_ml.features import (
     BENCHMARK_GAP_V3_FEATURE_COLUMNS,
     BENCHMARK_GAP_V3_FEATURE_SET_VERSION,
     DEFAULT_FEATURE_SET_VERSION,
+    LONG_HISTORY_REGIME_FEATURE_COLUMNS,
+    LONG_HISTORY_REGIME_FEATURE_SET_VERSION,
     TECHNICAL_FEATURE_SET_VERSION,
     FeatureSetConfig,
     build_feature_frame,
@@ -35,11 +37,14 @@ from us_market_ml.labels import (
     add_excess_return_vs_benchmark,
     add_forward_returns,
 )
+from us_market_ml.qqq_relative_targets import add_qqq_relative_targets
 
 TARGET_COLUMN_PREFIXES: tuple[str, ...] = (
     "forward_return_",
     "excess_return_vs_",
     "rank_",
+    "return_drawdown_score_vs_",
+    "qqq_outperformance_class_",
 )
 TECHNICAL_FEATURES_V2_ONLY: frozenset[str] = frozenset(
     {
@@ -69,6 +74,9 @@ TECHNICAL_FEATURES_V2_ONLY: frozenset[str] = frozenset(
         "correlation_to_spy_60d",
     }
 )
+LONG_HISTORY_ONLY_FEATURES: frozenset[str] = frozenset(
+    set(LONG_HISTORY_REGIME_FEATURE_COLUMNS).difference(BENCHMARK_GAP_ALL_FEATURE_COLUMNS)
+)
 
 
 @dataclass(frozen=True)
@@ -87,6 +95,9 @@ class SupervisedDatasetConfig:
     rank_col: str | None = "rank_excess_return_vs_spy_20d"
     price_col: str = "close"
     feature_set_version: str = DEFAULT_FEATURE_SET_VERSION
+    qqq_relative_excess_return_horizons: tuple[int, ...] = ()
+    qqq_relative_return_drawdown_horizons: tuple[int, ...] = ()
+    qqq_relative_classification_horizons: tuple[int, ...] = ()
 
 
 def build_supervised_dataset(
@@ -118,6 +129,20 @@ def build_supervised_dataset(
         benchmark_symbol=resolved_config.benchmark_symbol,
         horizons=resolved_config.excess_return_horizons,
     )
+    if (
+        resolved_config.qqq_relative_excess_return_horizons
+        or resolved_config.qqq_relative_return_drawdown_horizons
+        or resolved_config.qqq_relative_classification_horizons
+    ):
+        out = add_qqq_relative_targets(
+            out,
+            excess_return_horizons=resolved_config.qqq_relative_excess_return_horizons,
+            return_drawdown_horizons=(
+                resolved_config.qqq_relative_return_drawdown_horizons
+            ),
+            classification_horizons=resolved_config.qqq_relative_classification_horizons,
+            price_col=resolved_config.price_col,
+        )
 
     if resolved_config.rank_target_col is not None:
         if resolved_config.rank_target_col not in out.columns:
@@ -183,15 +208,21 @@ def get_feature_columns(
         BENCHMARK_GAP_FEATURE_SET_VERSION,
         BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
         BENCHMARK_GAP_V3_FEATURE_SET_VERSION,
+        LONG_HISTORY_REGIME_FEATURE_SET_VERSION,
     }:
         excluded_columns.update(TECHNICAL_FEATURES_V2_ONLY)
     if feature_set_version in {DEFAULT_FEATURE_SET_VERSION, TECHNICAL_FEATURE_SET_VERSION}:
         excluded_columns.update(BENCHMARK_GAP_ALL_FEATURE_COLUMNS)
+        excluded_columns.update(LONG_HISTORY_ONLY_FEATURES)
     if feature_set_version == BENCHMARK_GAP_FEATURE_SET_VERSION:
         excluded_columns.update(BENCHMARK_GAP_V2_FEATURE_COLUMNS)
         excluded_columns.update(BENCHMARK_GAP_V3_FEATURE_COLUMNS)
+        excluded_columns.update(LONG_HISTORY_ONLY_FEATURES)
     if feature_set_version == BENCHMARK_GAP_V2_FEATURE_SET_VERSION:
         excluded_columns.update(BENCHMARK_GAP_V3_FEATURE_COLUMNS)
+        excluded_columns.update(LONG_HISTORY_ONLY_FEATURES)
+    if feature_set_version == BENCHMARK_GAP_V3_FEATURE_SET_VERSION:
+        excluded_columns.update(LONG_HISTORY_ONLY_FEATURES)
     if extra_exclude is not None:
         excluded_columns.update(extra_exclude)
 
