@@ -192,7 +192,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help=(
             "Comma-separated feature set grid. Supported values: "
             "default_features_v1,technical_features_v2,benchmark_gap_features_v1,"
-            "benchmark_gap_features_v2."
+            "benchmark_gap_features_v2,benchmark_gap_features_v3."
         ),
     )
     parser.add_argument(

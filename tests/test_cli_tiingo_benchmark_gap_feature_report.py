@@ -14,6 +14,9 @@ from us_market_ml.cli.create_tiingo_benchmark_gap_feature_report import (
 from us_market_ml.cli.create_tiingo_benchmark_gap_feature_v2_report import (
     run_tiingo_benchmark_gap_feature_v2_report_from_args,
 )
+from us_market_ml.cli.create_tiingo_benchmark_gap_feature_v3_report import (
+    run_tiingo_benchmark_gap_feature_v3_report_from_args,
+)
 
 
 def test_benchmark_gap_feature_report_builds_summary_and_decision_matrix(
@@ -177,6 +180,82 @@ def test_benchmark_gap_feature_v2_report_compares_default_v1_and_v2(
     )
 
 
+def test_benchmark_gap_feature_v3_report_compares_v3_vs_v2(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    results_csv = tmp_path / "results.csv"
+    market_csv = tmp_path / "market.csv"
+    output_dir = tmp_path / "report"
+    _synthetic_results(
+        {
+            "default_features_v1": 0.03,
+            "benchmark_gap_features_v1": 0.05,
+            "benchmark_gap_features_v2": 0.07,
+            "benchmark_gap_features_v3": 0.08,
+        }
+    ).to_csv(results_csv, index=False)
+    _synthetic_market_data().to_csv(market_csv, index=False)
+
+    report_data = build_tiingo_benchmark_gap_feature_report(
+        results_csv=results_csv,
+        market_dataset_glob=market_csv,
+    )
+    v3_selected = report_data.decision_matrix.loc[
+        (report_data.decision_matrix["candidate_role"] == "selected_candidate")
+        & (
+            report_data.decision_matrix["feature_set_version"]
+            == "benchmark_gap_features_v3"
+        )
+    ].iloc[0]
+
+    assert set(report_data.feature_summary["feature_set_version"]) == {
+        "default_features_v1",
+        "benchmark_gap_features_v1",
+        "benchmark_gap_features_v2",
+        "benchmark_gap_features_v3",
+    }
+    assert v3_selected["selected_feature_count"] > 88
+    assert v3_selected["delta_strategy_vs_qqq_vs_benchmark_gap_v2"] == pytest.approx(
+        0.01
+    )
+    assert v3_selected["delta_strategy_vs_spy_vs_benchmark_gap_v2"] == pytest.approx(
+        0.01
+    )
+    assert v3_selected["benchmark_gap_change_vs_benchmark_gap_v2"] == (
+        "improved versus v2 SPY and QQQ gaps"
+    )
+    assert v3_selected["feature_decision"] == "keep v3 for rich replay baseline"
+    assert "not production-ready" in v3_selected["next_action"]
+
+    return_code = run_tiingo_benchmark_gap_feature_v3_report_from_args(
+        [
+            "--results-csv",
+            str(results_csv),
+            "--market-dataset-glob",
+            str(market_csv),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    summary_path = output_dir / "tiingo_benchmark_gap_feature_v3_summary.csv"
+    decision_path = output_dir / "tiingo_benchmark_gap_feature_v3_decision_matrix.csv"
+    markdown_path = output_dir / "tiingo_benchmark_gap_feature_v3_report.md"
+    markdown = markdown_path.read_text(encoding="utf-8")
+
+    assert return_code == 0
+    assert "Tiingo benchmark-gap feature v3 study report" in captured.out
+    assert summary_path.exists()
+    assert decision_path.exists()
+    assert markdown_path.exists()
+    assert "Tiingo Benchmark-Gap Feature V3 Study Report" in markdown
+    assert "benchmark_gap_features_v3" in markdown
+    assert "delta_strategy_vs_qqq_vs_benchmark_gap_v2" in markdown
+    assert "This is not production-ready" in markdown
+
+
 def _synthetic_results(
     feature_returns: dict[str, float] | None = None,
 ) -> pd.DataFrame:
@@ -255,6 +334,8 @@ def _synthetic_feature_count(feature_set_version: str) -> int:
         return 20
     if feature_set_version == "benchmark_gap_features_v1":
         return 54
+    if feature_set_version == "benchmark_gap_features_v3":
+        return 140
     return 88
 
 

@@ -10,6 +10,7 @@ import pytest
 from us_market_ml.cli.run_tiingo_benchmark_gap_feature_study import (
     BENCHMARK_GAP_FEATURE_SET_VERSION,
     BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
+    BENCHMARK_GAP_V3_FEATURE_SET_VERSION,
     DEFAULT_FEATURE_SET_VERSION,
     DEFAULT_TRANSACTION_COST_BPS_VALUES,
     build_tiingo_benchmark_gap_feature_study_folds,
@@ -35,8 +36,9 @@ def test_benchmark_gap_feature_study_default_scale_is_compact(tmp_path: Path) ->
         DEFAULT_FEATURE_SET_VERSION,
         BENCHMARK_GAP_FEATURE_SET_VERSION,
         BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
+        BENCHMARK_GAP_V3_FEATURE_SET_VERSION,
     )
-    assert plan.estimated_total_configs == 486
+    assert plan.estimated_total_configs == 648
     assert plan.estimated_total_configs < 1188
 
 
@@ -88,11 +90,12 @@ def test_benchmark_gap_feature_study_cli_dry_run_writes_preflight_and_counts(
     assert preflight_csv.exists()
     assert preflight_md.exists()
     assert skipped.exists()
-    assert len(preflight) == 9
+    assert len(preflight) == 12
     assert set(preflight["feature_set_version"]) == {
         DEFAULT_FEATURE_SET_VERSION,
         BENCHMARK_GAP_FEATURE_SET_VERSION,
         BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
+        BENCHMARK_GAP_V3_FEATURE_SET_VERSION,
     }
     assert set(preflight["candidate_role"]) == {
         "historical_reference",
@@ -116,13 +119,18 @@ def test_benchmark_gap_feature_study_cli_dry_run_writes_preflight_and_counts(
         feature_counts[BENCHMARK_GAP_V2_FEATURE_SET_VERSION]
         > feature_counts[BENCHMARK_GAP_FEATURE_SET_VERSION]
     )
+    assert (
+        feature_counts[BENCHMARK_GAP_V3_FEATURE_SET_VERSION]
+        > feature_counts[BENCHMARK_GAP_V2_FEATURE_SET_VERSION]
+    )
 
-    assert "total configs/runs: 9" in captured.out
-    assert "valid configs/runs: 9" in captured.out
-    assert "pending configs for this batch: 9" in captured.out
+    assert "total configs/runs: 12" in captured.out
+    assert "valid configs/runs: 12" in captured.out
+    assert "pending configs for this batch: 12" in captured.out
     assert (
         "feature_set_versions: ['default_features_v1', "
-        "'benchmark_gap_features_v1', 'benchmark_gap_features_v2']"
+        "'benchmark_gap_features_v1', 'benchmark_gap_features_v2', "
+        "'benchmark_gap_features_v3']"
     ) in captured.out
     assert "candidate spec count: 3" in captured.out
     assert "tree_screen: not run" in captured.out
@@ -133,7 +141,8 @@ def test_benchmark_gap_feature_study_cli_dry_run_writes_preflight_and_counts(
     assert "Tiingo Benchmark-Gap Feature Study Preflight" in markdown
     assert (
         "Feature set versions: `['default_features_v1', "
-        "'benchmark_gap_features_v1', 'benchmark_gap_features_v2']`"
+        "'benchmark_gap_features_v1', 'benchmark_gap_features_v2', "
+        "'benchmark_gap_features_v3']`"
     ) in markdown
     assert "Candidate spec count: `3`" in markdown
     assert "`tree_screen`, MLP, and production signal export are intentionally not part" in markdown
@@ -177,7 +186,7 @@ def test_benchmark_gap_feature_study_can_disable_reference_candidates(
     preflight = pd.read_csv(tmp_path / "study" / "selected_only_preflight.csv")
 
     assert exit_code == 0
-    assert len(preflight) == 3
+    assert len(preflight) == 4
     assert set(preflight["candidate_role"]) == {"selected_candidate"}
 
 
@@ -240,6 +249,23 @@ def test_benchmark_gap_feature_study_v2_shell_runner_sets_v2_defaults() -> None:
     )
     assert "create_tiingo_benchmark_gap_feature_v2_report" in script
     assert "artifacts/reports/tiingo_benchmark_gap_feature_study_v2" in script
+
+    subprocess.run(["bash", "-n", str(script_path)], check=True)
+
+
+def test_benchmark_gap_feature_study_v3_shell_runner_sets_v3_defaults() -> None:
+    script_path = Path("scripts/run_tiingo_benchmark_gap_feature_study_v3.sh")
+    script = script_path.read_text(encoding="utf-8")
+
+    assert os.access(script_path, os.X_OK)
+    assert "set -euo pipefail" in script
+    assert "tiingo_benchmark_gap_feature_study_v3" in script
+    assert (
+        "default_features_v1 benchmark_gap_features_v1 benchmark_gap_features_v2 "
+        "benchmark_gap_features_v3"
+    ) in script
+    assert "create_tiingo_benchmark_gap_feature_v3_report" in script
+    assert "artifacts/reports/tiingo_benchmark_gap_feature_study_v3" in script
 
     subprocess.run(["bash", "-n", str(script_path)], check=True)
 
