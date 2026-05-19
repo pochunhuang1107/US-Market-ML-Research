@@ -68,6 +68,7 @@ from us_market_ml.experiments import (
 from us_market_ml.features import (
     BENCHMARK_GAP_FEATURE_SET_VERSION,
     BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
+    BENCHMARK_GAP_V3_FEATURE_SET_VERSION,
     DEFAULT_FEATURE_SET_VERSION,
     validate_feature_set_version,
 )
@@ -86,6 +87,7 @@ DEFAULT_FEATURE_SET_VERSIONS = (
     DEFAULT_FEATURE_SET_VERSION,
     BENCHMARK_GAP_FEATURE_SET_VERSION,
     BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
+    BENCHMARK_GAP_V3_FEATURE_SET_VERSION,
 )
 
 SWEEP_PROFILE = "benchmark_gap_feature_study"
@@ -582,6 +584,7 @@ def _render_preflight_markdown(
     candidate_feature_sets = [
         BENCHMARK_GAP_FEATURE_SET_VERSION,
         BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
+        BENCHMARK_GAP_V3_FEATURE_SET_VERSION,
     ]
 
     lines = [
