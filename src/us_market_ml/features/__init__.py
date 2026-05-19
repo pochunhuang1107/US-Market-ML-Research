@@ -15,11 +15,16 @@ from us_market_ml.features.feature_pipeline import (
     BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
     BENCHMARK_GAP_V3_FEATURE_SET_VERSION,
     DEFAULT_FEATURE_SET_VERSION,
+    LONG_HISTORY_REGIME_FEATURE_SET_VERSION,
     SUPPORTED_FEATURE_SET_VERSIONS,
     TECHNICAL_FEATURE_SET_VERSION,
     FeatureSetConfig,
     build_feature_frame,
     validate_feature_set_version,
+)
+from us_market_ml.features.long_history_regime import (
+    LONG_HISTORY_REGIME_FEATURE_COLUMNS,
+    add_long_history_regime_features,
 )
 
 __all__ = [
@@ -31,6 +36,8 @@ __all__ = [
     "BENCHMARK_GAP_V3_FEATURE_COLUMNS",
     "BENCHMARK_GAP_V3_FEATURE_SET_VERSION",
     "DEFAULT_FEATURE_SET_VERSION",
+    "LONG_HISTORY_REGIME_FEATURE_COLUMNS",
+    "LONG_HISTORY_REGIME_FEATURE_SET_VERSION",
     "SUPPORTED_FEATURE_SET_VERSIONS",
     "TECHNICAL_FEATURE_SET_VERSION",
     "FeatureSetConfig",
@@ -38,6 +45,7 @@ __all__ = [
     "add_benchmark_gap_v2_features",
     "add_benchmark_gap_v3_features",
     "add_cross_asset_features",
+    "add_long_history_regime_features",
     "build_feature_frame",
     "validate_feature_set_version",
 ]

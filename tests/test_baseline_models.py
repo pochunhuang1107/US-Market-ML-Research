@@ -3,8 +3,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-from sklearn.ensemble import ExtraTreesRegressor, GradientBoostingRegressor, RandomForestRegressor
-from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.ensemble import (
+    ExtraTreesRegressor,
+    GradientBoostingRegressor,
+    HistGradientBoostingRegressor,
+    RandomForestRegressor,
+)
+from sklearn.linear_model import ElasticNet, HuberRegressor, LinearRegression, Ridge
 
 from us_market_ml.models import (
     BaselineFitResult,
@@ -46,6 +51,18 @@ def test_create_baseline_model_supports_all_model_types() -> None:
     assert isinstance(
         create_baseline_model(BaselineModelConfig(model_type="extra_trees")),
         ExtraTreesRegressor,
+    )
+    assert isinstance(
+        create_baseline_model(BaselineModelConfig(model_type="elasticnet")),
+        ElasticNet,
+    )
+    assert isinstance(
+        create_baseline_model(BaselineModelConfig(model_type="huber_regression")),
+        HuberRegressor,
+    )
+    assert isinstance(
+        create_baseline_model(BaselineModelConfig(model_type="hist_gradient_boosting")),
+        HistGradientBoostingRegressor,
     )
 
 
