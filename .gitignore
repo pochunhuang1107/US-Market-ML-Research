@@ -32,3 +32,4 @@ scripts/*_with_progress.sh
 !scripts/run_tiingo_benchmark_gap_feature_study_v2.sh
 !scripts/run_tiingo_benchmark_gap_feature_study_v3.sh
 !scripts/run_tiingo_v3_allocation_overlay_study.sh
+!scripts/run_tiingo_qqq_timing_baseline_study.sh
