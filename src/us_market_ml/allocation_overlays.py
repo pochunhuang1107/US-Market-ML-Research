@@ -12,6 +12,9 @@ OverlayKind = Literal[
     "equal_weight_topk",
     "rank_weighted_topk",
     "capped_score_weighted_topk",
+    "capped_softmax_weighted_topk",
+    "conviction_switch_topk",
+    "symbol_rank_switch_topk",
     "static_core_satellite",
     "dynamic_core_satellite",
     "qqq_floor_if_not_selected",
@@ -28,8 +31,15 @@ class AllocationOverlaySpec:
 
     name: str
     kind: OverlayKind
+    selection_count: int | None = None
     rank_weights: tuple[float, ...] = ()
     max_weight: float | None = None
+    score_temperature: float = 1.0
+    conviction_gap_threshold: float | None = None
+    trigger_symbol: str | None = None
+    trigger_rank_max: int | None = None
+    trigger_selection_count: int | None = None
+    fallback_selection_count: int | None = None
     core_weights: tuple[tuple[str, float], ...] = ()
     regime_columns: tuple[str, ...] = ()
     satellite_weight: float | None = None
@@ -121,6 +131,102 @@ def default_allocation_overlay_specs(
     )
 
 
+def default_pure_weighted_allocation_specs(
+    *,
+    high_conviction_gap_threshold: float = 0.010,
+    softmax_temperature: float = 0.050,
+) -> tuple[AllocationOverlaySpec, ...]:
+    """Return the pure weighted-allocation rule set for benchmark-gap v3 research."""
+
+    if high_conviction_gap_threshold < 0.0:
+        raise ValueError("high_conviction_gap_threshold must be greater than or equal to 0.")
+    if softmax_temperature <= 0.0:
+        raise ValueError("softmax_temperature must be greater than 0.")
+    return (
+        AllocationOverlaySpec(
+            name="equal_weight_top5_baseline",
+            kind="equal_weight_topk",
+            selection_count=5,
+        ),
+        AllocationOverlaySpec(
+            name="top1_only",
+            kind="equal_weight_topk",
+            selection_count=1,
+        ),
+        AllocationOverlaySpec(
+            name="top2_equal_weight",
+            kind="equal_weight_topk",
+            selection_count=2,
+        ),
+        AllocationOverlaySpec(
+            name="top3_equal_weight",
+            kind="equal_weight_topk",
+            selection_count=3,
+        ),
+        AllocationOverlaySpec(
+            name="top5_rank_decay_mild",
+            kind="rank_weighted_topk",
+            selection_count=5,
+            rank_weights=(0.30, 0.25, 0.20, 0.15, 0.10),
+        ),
+        AllocationOverlaySpec(
+            name="top3_rank_decay",
+            kind="rank_weighted_topk",
+            selection_count=3,
+            rank_weights=(0.50, 0.30, 0.20),
+        ),
+        AllocationOverlaySpec(
+            name="score_weighted_top3_cap050",
+            kind="capped_score_weighted_topk",
+            selection_count=3,
+            max_weight=0.50,
+        ),
+        AllocationOverlaySpec(
+            name="score_weighted_top5_cap035",
+            kind="capped_score_weighted_topk",
+            selection_count=5,
+            max_weight=0.35,
+        ),
+        AllocationOverlaySpec(
+            name="softmax_top3_temp_low",
+            kind="capped_softmax_weighted_topk",
+            selection_count=3,
+            max_weight=0.50,
+            score_temperature=softmax_temperature,
+        ),
+        AllocationOverlaySpec(
+            name="softmax_top5_temp_low",
+            kind="capped_softmax_weighted_topk",
+            selection_count=5,
+            max_weight=0.35,
+            score_temperature=softmax_temperature,
+        ),
+        AllocationOverlaySpec(
+            name="high_conviction_top3_else_top5",
+            kind="conviction_switch_topk",
+            conviction_gap_threshold=high_conviction_gap_threshold,
+            trigger_selection_count=3,
+            fallback_selection_count=5,
+        ),
+        AllocationOverlaySpec(
+            name="qqq_if_ranked_top3_else_model",
+            kind="symbol_rank_switch_topk",
+            trigger_symbol="QQQ",
+            trigger_rank_max=3,
+            trigger_selection_count=3,
+            fallback_selection_count=5,
+        ),
+        AllocationOverlaySpec(
+            name="qqq_if_ranked_top2_else_top5",
+            kind="symbol_rank_switch_topk",
+            trigger_symbol="QQQ",
+            trigger_rank_max=2,
+            trigger_selection_count=3,
+            fallback_selection_count=5,
+        ),
+    )
+
+
 def apply_allocation_overlay(
     signals: pd.DataFrame,
     spec: AllocationOverlaySpec,
@@ -166,7 +272,7 @@ def apply_allocation_overlay(
     for _, date_group in positioned.groupby(date_col, sort=False, dropna=False):
         selected_rows = _selected_rows_for_date(
             date_group,
-            top_k=top_k,
+            top_k=_candidate_count_for_spec(spec, top_k),
             symbol_col=symbol_col,
             selected_col=selected_col,
             rank_col=rank_col,
@@ -235,6 +341,8 @@ def _weights_for_date(
     symbol_col: str,
     prediction_col: str,
 ) -> tuple[dict[str, float], list[str]]:
+    selected_rows = _limit_selected_rows(selected_rows, _selection_count(spec, len(selected_rows)))
+    selected_symbols = selected_rows[symbol_col].astype(str).tolist()
     if spec.kind == "equal_weight_topk":
         return _topk_weights(selected_symbols, _equal_weights(len(selected_symbols)))
     if spec.kind == "rank_weighted_topk":
@@ -248,6 +356,25 @@ def _weights_for_date(
             max_weight=max_weight,
         )
         return _topk_weights(selected_symbols, weights)
+    if spec.kind == "capped_softmax_weighted_topk":
+        max_weight = spec.max_weight if spec.max_weight is not None else 1.0
+        weights = _capped_softmax_weights(
+            selected_rows,
+            prediction_col=prediction_col,
+            max_weight=max_weight,
+            temperature=spec.score_temperature,
+        )
+        return _topk_weights(selected_symbols, weights)
+    if spec.kind == "conviction_switch_topk":
+        count = _conviction_selection_count(selected_rows, spec, prediction_col=prediction_col)
+        switched_rows = _limit_selected_rows(selected_rows, count)
+        switched_symbols = switched_rows[symbol_col].astype(str).tolist()
+        return _topk_weights(switched_symbols, _equal_weights(len(switched_symbols)))
+    if spec.kind == "symbol_rank_switch_topk":
+        count = _symbol_rank_selection_count(selected_rows, spec, symbol_col=symbol_col)
+        switched_rows = _limit_selected_rows(selected_rows, count)
+        switched_symbols = switched_rows[symbol_col].astype(str).tolist()
+        return _topk_weights(switched_symbols, _equal_weights(len(switched_symbols)))
     if spec.kind == "static_core_satellite":
         return _core_satellite_weights(
             selected_symbols,
@@ -274,6 +401,27 @@ def _weights_for_date(
             rank_symbols.append("QQQ")
         return _normalize_weight_map(weights_by_symbol), rank_symbols
     raise ValueError(f"Unsupported allocation overlay kind: {spec.kind!r}")
+
+
+def _candidate_count_for_spec(spec: AllocationOverlaySpec, default_top_k: int) -> int:
+    counts = [
+        default_top_k,
+        spec.selection_count,
+        spec.trigger_selection_count,
+        spec.fallback_selection_count,
+    ]
+    return max(int(count) for count in counts if count is not None and int(count) > 0)
+
+
+def _selection_count(spec: AllocationOverlaySpec, available_count: int) -> int:
+    count = spec.selection_count if spec.selection_count is not None else available_count
+    return max(0, min(int(count), available_count))
+
+
+def _limit_selected_rows(selected_rows: pd.DataFrame, count: int) -> pd.DataFrame:
+    if count <= 0:
+        return selected_rows.iloc[0:0].copy()
+    return selected_rows.head(count).copy()
 
 
 def _selected_rows_for_date(
@@ -401,6 +549,81 @@ def _capped_score_weights(
     if not np.isfinite(total) or total <= _EPSILON:
         return _equal_weights(len(selected_rows))
     return _cap_and_redistribute(shifted / total, max_weight)
+
+
+def _capped_softmax_weights(
+    selected_rows: pd.DataFrame,
+    *,
+    prediction_col: str,
+    max_weight: float,
+    temperature: float,
+) -> np.ndarray:
+    if not 0.0 < max_weight <= 1.0:
+        raise ValueError("max_weight must satisfy 0 < max_weight <= 1.")
+    if temperature <= 0.0:
+        raise ValueError("temperature must be greater than 0.")
+    if len(selected_rows) * max_weight < 1.0:
+        raise ValueError("selected_count * max_weight must be at least 1.")
+    if selected_rows.empty:
+        return np.array([], dtype=float)
+
+    scores = pd.to_numeric(selected_rows[prediction_col], errors="coerce").to_numpy(
+        dtype=float
+    )
+    if not bool(np.isfinite(scores).all()):
+        return _equal_weights(len(selected_rows))
+    scaled = scores / temperature
+    stabilized = scaled - np.nanmax(scaled)
+    exp_scores = np.exp(stabilized)
+    total = float(exp_scores.sum())
+    if not np.isfinite(total) or total <= _EPSILON:
+        return _equal_weights(len(selected_rows))
+    return _cap_and_redistribute(exp_scores / total, max_weight)
+
+
+def _conviction_selection_count(
+    selected_rows: pd.DataFrame,
+    spec: AllocationOverlaySpec,
+    *,
+    prediction_col: str,
+) -> int:
+    fallback_count = spec.fallback_selection_count or len(selected_rows)
+    trigger_count = spec.trigger_selection_count or fallback_count
+    threshold = float(spec.conviction_gap_threshold or 0.0)
+    if len(selected_rows) < fallback_count:
+        return min(int(fallback_count), len(selected_rows))
+
+    predictions = pd.to_numeric(selected_rows[prediction_col], errors="coerce")
+    has_invalid_predictions = not np.isfinite(
+        predictions.iloc[:fallback_count]
+    ).all()
+    if len(predictions) < fallback_count or has_invalid_predictions:
+        return min(int(fallback_count), len(selected_rows))
+    gap = float(predictions.iloc[0] - predictions.iloc[fallback_count - 1])
+    count = trigger_count if gap >= threshold else fallback_count
+    return min(int(count), len(selected_rows))
+
+
+def _symbol_rank_selection_count(
+    selected_rows: pd.DataFrame,
+    spec: AllocationOverlaySpec,
+    *,
+    symbol_col: str,
+) -> int:
+    fallback_count = spec.fallback_selection_count or len(selected_rows)
+    trigger_count = spec.trigger_selection_count or fallback_count
+    trigger_symbol = (spec.trigger_symbol or "").upper()
+    rank_max = int(spec.trigger_rank_max or 0)
+    if not trigger_symbol or rank_max <= 0:
+        return min(int(fallback_count), len(selected_rows))
+
+    ranked_symbols = selected_rows[symbol_col].astype(str).str.upper().tolist()
+    try:
+        trigger_rank = ranked_symbols.index(trigger_symbol) + 1
+    except ValueError:
+        return min(int(fallback_count), len(selected_rows))
+    count = trigger_count if trigger_rank <= rank_max else fallback_count
+    return min(int(count), len(selected_rows))
 
 
 def _positive_shifted_scores(scores: np.ndarray) -> np.ndarray:
@@ -589,5 +812,6 @@ __all__ = [
     "AllocationOverlaySpec",
     "apply_allocation_overlay",
     "default_allocation_overlay_specs",
+    "default_pure_weighted_allocation_specs",
     "validate_overlay_weights",
 ]
