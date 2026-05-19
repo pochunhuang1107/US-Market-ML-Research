@@ -32,6 +32,8 @@ main() {
   VALIDATION_WINDOW_MONTHS="${VALIDATION_WINDOW_MONTHS:-12}"
   TEST_WINDOW_MONTHS="${TEST_WINDOW_MONTHS:-3 6 12}"
   TRANSACTION_COST_BPS="${TRANSACTION_COST_BPS:-10}"
+  FEATURE_SET_VERSION="${FEATURE_SET_VERSION:-default_features_v1}"
+  REFERENCE_FEATURE_SET_VERSIONS="${REFERENCE_FEATURE_SET_VERSIONS:-}"
   MIN_HISTORY_ROWS="${MIN_HISTORY_ROWS:-252}"
   MIN_TRAIN_ELIGIBLE_ROWS="${MIN_TRAIN_ELIGIBLE_ROWS:-5000}"
   INCLUDE_REFERENCES="${INCLUDE_REFERENCES:-1}"
@@ -47,12 +49,16 @@ main() {
     --max-workers "$MAX_WORKERS"
     --step-months "$STEP_MONTHS"
     --transaction-cost-bps "$TRANSACTION_COST_BPS"
+    --feature-set-version "$FEATURE_SET_VERSION"
     --min-history-rows "$MIN_HISTORY_ROWS"
     --min-train-eligible-rows "$MIN_TRAIN_ELIGIBLE_ROWS"
   )
   append_values_arg --train-window-years "$TRAIN_WINDOW_YEARS"
   append_values_arg --validation-window-months "$VALIDATION_WINDOW_MONTHS"
   append_values_arg --test-window-months "$TEST_WINDOW_MONTHS"
+  if [[ -n "$REFERENCE_FEATURE_SET_VERSIONS" ]]; then
+    append_values_arg --reference-feature-set-versions "$REFERENCE_FEATURE_SET_VERSIONS"
+  fi
 
   if [[ "$INCLUDE_REFERENCES" == "0" ]]; then
     cmd+=(--no-include-references)

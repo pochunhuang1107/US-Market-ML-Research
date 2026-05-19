@@ -21,6 +21,9 @@ UNDERPERFORMANCE_WINDOWS_NAME = "underperformance_windows.csv"
 SELECTED_SYMBOL_SUMMARY_NAME = "selected_symbol_summary.csv"
 RICH_REPLAY_SUMMARY_NAME = "rich_replay_summary.csv"
 REFERENCE_PERFORMANCE_NAME = "reference_performance.csv"
+FEATURE_SET_COMPARISON_NAME = "feature_set_comparison.csv"
+V2_VS_V1_UNDERPERFORMANCE_DELTA_NAME = "v2_vs_v1_underperformance_delta.csv"
+V2_SELECTED_SYMBOL_SUMMARY_NAME = "v2_selected_symbol_summary.csv"
 
 
 def run_tiingo_selected_candidate_rich_replay_report_from_args(
@@ -31,7 +34,9 @@ def run_tiingo_selected_candidate_rich_replay_report_from_args(
     args = _parse_args(argv)
     artifact_data = read_rich_replay_artifacts(args.output_dir)
     report = render_tiingo_selected_candidate_rich_replay_markdown(artifact_data)
-    report_path = args.report_path if args.report_path is not None else args.output_dir / REPORT_PATH_NAME
+    report_path = (
+        args.report_path if args.report_path is not None else args.output_dir / REPORT_PATH_NAME
+    )
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report, encoding="utf-8")
 
@@ -58,6 +63,9 @@ class RichReplayReportData:
         selected_symbol_summary: pd.DataFrame,
         rich_replay_summary: pd.DataFrame,
         reference_performance: pd.DataFrame,
+        feature_set_comparison: pd.DataFrame | None = None,
+        v2_vs_v1_underperformance_delta: pd.DataFrame | None = None,
+        v2_selected_symbol_summary: pd.DataFrame | None = None,
     ) -> None:
         self.daily_strategy_equity = daily_strategy_equity
         self.daily_holdings = daily_holdings
@@ -68,6 +76,19 @@ class RichReplayReportData:
         self.selected_symbol_summary = selected_symbol_summary
         self.rich_replay_summary = rich_replay_summary
         self.reference_performance = reference_performance
+        self.feature_set_comparison = (
+            feature_set_comparison if feature_set_comparison is not None else pd.DataFrame()
+        )
+        self.v2_vs_v1_underperformance_delta = (
+            v2_vs_v1_underperformance_delta
+            if v2_vs_v1_underperformance_delta is not None
+            else pd.DataFrame()
+        )
+        self.v2_selected_symbol_summary = (
+            v2_selected_symbol_summary
+            if v2_selected_symbol_summary is not None
+            else pd.DataFrame()
+        )
 
 
 def read_rich_replay_artifacts(output_dir: Path = DEFAULT_OUTPUT_DIR) -> RichReplayReportData:
@@ -85,6 +106,13 @@ def read_rich_replay_artifacts(output_dir: Path = DEFAULT_OUTPUT_DIR) -> RichRep
         selected_symbol_summary=_read_csv_if_exists(output_dir / SELECTED_SYMBOL_SUMMARY_NAME),
         rich_replay_summary=_read_csv_if_exists(output_dir / RICH_REPLAY_SUMMARY_NAME),
         reference_performance=_read_csv_if_exists(output_dir / REFERENCE_PERFORMANCE_NAME),
+        feature_set_comparison=_read_csv_if_exists(output_dir / FEATURE_SET_COMPARISON_NAME),
+        v2_vs_v1_underperformance_delta=_read_csv_if_exists(
+            output_dir / V2_VS_V1_UNDERPERFORMANCE_DELTA_NAME
+        ),
+        v2_selected_symbol_summary=_read_csv_if_exists(
+            output_dir / V2_SELECTED_SYMBOL_SUMMARY_NAME
+        ),
     )
 
 
@@ -99,6 +127,10 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
     holdings = artifact_data.selected_symbol_summary.copy()
     turnover = artifact_data.trade_turnover_diagnostics.copy()
     references = artifact_data.reference_performance.copy()
+    feature_comparison = artifact_data.feature_set_comparison.copy()
+    v2_v1_delta = artifact_data.v2_vs_v1_underperformance_delta.copy()
+    v2_holdings = artifact_data.v2_selected_symbol_summary.copy()
+    feature_set_version = str(summary.get("feature_set_version", "unknown"))
 
     qqq_stronger = _as_float(summary.get("qqq_average_total_return")) > _as_float(
         summary.get("strategy_average_total_return")
@@ -119,6 +151,7 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
         "with daily strategy equity, drawdown, holdings, rebalance, turnover, and "
         "benchmark artifacts.",
         "",
+        f"Feature set used: `{feature_set_version}`.",
         f"Decision: `{summary.get('decision', 'unknown')}`.",
         f"Next action: `{summary.get('next_action', 'unknown')}`.",
         "",
@@ -149,13 +182,14 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
                     "min_history_rows",
                     "min_train_eligible_rows",
                     "feature_set_version",
+                    "reference_feature_set_versions",
                     "target_col",
                     "label_horizon_days",
                 ],
             )
         ),
         "",
-        "## Benchmark comparison vs SPY/QQQ",
+        "## Comparison vs SPY and QQQ",
         "",
         _markdown_table(
             _dict_to_frame(
@@ -172,7 +206,54 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
             )
         ),
         "",
-        "## Equity/drawdown summary",
+        "## Comparison vs default_features_v1 selected candidate",
+        "",
+        _markdown_table(
+            _format_for_markdown(
+                _comparison_for_feature_set(feature_comparison, "default_features_v1")
+            )
+        ),
+        "",
+        "## Comparison vs benchmark_gap_features_v1 selected candidate",
+        "",
+        _markdown_table(
+            _format_for_markdown(
+                _comparison_for_feature_set(
+                    feature_comparison,
+                    "benchmark_gap_features_v1",
+                )
+            )
+        ),
+        "",
+        "## Feature set comparison",
+        "",
+        _markdown_table(
+            _format_for_markdown(
+                feature_comparison[
+                    [
+                        column
+                        for column in [
+                            "comparison_role",
+                            "feature_set_version",
+                            "reference_label",
+                            "fold_count",
+                            "average_total_return",
+                            "average_strategy_vs_spy",
+                            "average_strategy_vs_qqq",
+                            "average_max_drawdown",
+                            "delta_average_total_return_vs_primary",
+                            "delta_strategy_vs_spy_vs_primary",
+                            "delta_strategy_vs_qqq_vs_primary",
+                        ]
+                        if column in feature_comparison.columns
+                    ]
+                ].head(20)
+                if not feature_comparison.empty
+                else feature_comparison
+            )
+        ),
+        "",
+        "## Daily equity/drawdown summary",
         "",
         _markdown_table(
             _dict_to_frame(
@@ -188,6 +269,10 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
                 ],
             )
         ),
+        "",
+        "## V2 vs V1 underperformance delta",
+        "",
+        _markdown_table(_format_for_markdown(v2_v1_delta.head(80))),
         "",
         "## Fold-by-fold performance",
         "",
@@ -215,7 +300,7 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
             )
         ),
         "",
-        "## Underperformance windows",
+        "## Underperformance windows versus SPY and QQQ",
         "",
         _markdown_table(
             _format_for_markdown(
@@ -233,6 +318,10 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
         "",
         _markdown_table(_format_for_markdown(holdings.head(30))),
         "",
+        "## V2 selected symbol summary",
+        "",
+        _markdown_table(_format_for_markdown(v2_holdings.head(30))),
+        "",
         "## Turnover diagnostics",
         "",
         _markdown_table(_format_for_markdown(turnover.head(80))),
@@ -243,29 +332,65 @@ def render_tiingo_selected_candidate_rich_replay_markdown(
         "",
         "## Artifact limitations",
         "",
-        "- This replay uses the existing research backtester and its simple turnover-bps transaction-cost approximation.",
-        "- Target weights are close-generated and applied with the existing one-row-per-symbol lag.",
+        "- This replay uses the existing research backtester and its simple "
+        "turnover-bps transaction-cost approximation.",
+        "- Target weights are close-generated and applied with the existing "
+        "one-row-per-symbol lag.",
         "- SPY and QQQ are buy-and-hold references, not investable blended alternatives.",
         "- This is research evidence only; it is not production-ready.",
-        "- This task did not run tree_screen, did not add MLP, and did not add feature engineering.",
+        "- This task did not run tree_screen, did not add MLP, and did not add "
+        "feature engineering.",
         "",
         "## Decision",
         "",
         f"Decision: `{summary.get('decision', 'unknown')}`.",
         "",
         "Decision rule applied: do not promote only because the selected candidate "
-        "beats the historical ML champion. Promotion needs benchmark-aware evidence "
-        "against both SPY and QQQ.",
+        "beats default_features_v1, benchmark_gap_features_v1, or the historical ML "
+        "champion. If v2 beats SPY on average but still trails QQQ, it is current "
+        "best research feature-set evidence, not production-ready evidence.",
         "",
         "## Next action",
         "",
         f"Next action: `{summary.get('next_action', 'unknown')}`.",
         "",
-        "Allowed next-action menu considered: `feature engineering`, `tree_screen`, "
-        "`MLP`, `model-card draft`.",
+        "Allowed next-action menu considered: `feature engineering v3`, "
+        "`allocation/risk overlay`, `tree_screen`, `MLP`, `model-card draft`.",
         "",
     ]
     return "\n".join(lines)
+
+
+def _comparison_for_feature_set(
+    feature_comparison: pd.DataFrame,
+    feature_set_version: str,
+) -> pd.DataFrame:
+    if feature_comparison.empty or "feature_set_version" not in feature_comparison.columns:
+        return pd.DataFrame()
+    rows = feature_comparison.loc[
+        feature_comparison["feature_set_version"].astype(str).eq(feature_set_version)
+    ].copy()
+    if rows.empty:
+        return pd.DataFrame()
+    columns = [
+        column
+        for column in [
+            "comparison_role",
+            "feature_set_version",
+            "reference_label",
+            "fold_count",
+            "average_total_return",
+            "average_strategy_vs_spy",
+            "average_strategy_vs_qqq",
+            "average_max_drawdown",
+            "average_mean_daily_turnover",
+            "delta_average_total_return_vs_primary",
+            "delta_strategy_vs_spy_vs_primary",
+            "delta_strategy_vs_qqq_vs_primary",
+        ]
+        if column in rows.columns
+    ]
+    return rows.loc[:, columns]
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
