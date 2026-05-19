@@ -22,6 +22,7 @@ from us_market_ml.backtest import (
 from us_market_ml.cli.create_tiingo_selected_candidate_rich_replay_report import (
     DAILY_HOLDINGS_NAME,
     DAILY_STRATEGY_EQUITY_NAME,
+    FEATURE_SET_COMPARISON_NAME,
     FOLD_PERFORMANCE_NAME,
     REBALANCE_LOG_NAME,
     REFERENCE_PERFORMANCE_NAME,
@@ -30,6 +31,8 @@ from us_market_ml.cli.create_tiingo_selected_candidate_rich_replay_report import
     SELECTED_SYMBOL_SUMMARY_NAME,
     TRADE_TURNOVER_DIAGNOSTICS_NAME,
     UNDERPERFORMANCE_WINDOWS_NAME,
+    V2_SELECTED_SYMBOL_SUMMARY_NAME,
+    V2_VS_V1_UNDERPERFORMANCE_DELTA_NAME,
     RichReplayReportData,
     render_tiingo_selected_candidate_rich_replay_markdown,
 )
@@ -41,7 +44,6 @@ from us_market_ml.cli.run_tiingo_modern_baseline_sweep import (
     DEFAULT_MIN_HISTORY_ROWS,
     DEFAULT_MIN_TRAIN_ELIGIBLE_ROWS,
     FEATURE_SELECTION_SCOPE,
-    FEATURE_SET_VERSION,
     INCLUDE_PARTIAL_FINAL_TEST,
     LABEL_HORIZON_DAYS,
     MIN_PARTIAL_TEST_DAYS,
@@ -56,12 +58,20 @@ from us_market_ml.cli.run_tiingo_modern_baseline_sweep import (
     _parse_positive_int,
     _parse_positive_int_values,
 )
+from us_market_ml.cli.run_tiingo_modern_baseline_sweep import (
+    FEATURE_SET_VERSION as DEFAULT_REPLAY_FEATURE_SET_VERSION,
+)
 from us_market_ml.data import SupervisedDatasetConfig, read_local_market_data
 from us_market_ml.experiments import (
     BaselineE2EExperimentConfig,
     BaselineE2EExperimentResult,
     BaselineExperimentConfig,
     run_baseline_e2e_experiment,
+)
+from us_market_ml.features import (
+    BENCHMARK_GAP_FEATURE_SET_VERSION,
+    BENCHMARK_GAP_V2_FEATURE_SET_VERSION,
+    validate_feature_set_version,
 )
 from us_market_ml.models import BaselineModelConfig
 from us_market_ml.splits import WalkForwardFold, make_sliding_window_folds
@@ -75,6 +85,7 @@ DEFAULT_TEST_WINDOW_MONTHS = (3, 6, 12)
 DEFAULT_STEP_MONTHS = 3
 DEFAULT_TRANSACTION_COST_BPS = 10.0
 DEFAULT_BENCHMARK_SYMBOLS = ("SPY", "QQQ")
+DEFAULT_REFERENCE_FEATURE_SET_VERSIONS: tuple[str, ...] = tuple()
 
 MODEL_FAMILY = "baseline"
 UNIVERSE_NAME = "tiingo_selected_candidate_rich_replay_dynamic"
@@ -169,17 +180,57 @@ SELECTED_SYMBOL_SUMMARY_COLUMNS = [
 REFERENCE_PERFORMANCE_COLUMNS = [
     "reference_role",
     "reference_label",
+    "feature_set_version",
     "model_type",
     "top_k",
     "min_holding_days",
     "switch_margin",
     "fold_count",
     "average_total_return",
+    "average_strategy_vs_spy",
+    "average_strategy_vs_qqq",
     "average_sharpe_like",
     "average_max_drawdown",
     "worst_max_drawdown",
     "average_total_transaction_cost",
     "average_mean_daily_turnover",
+]
+FEATURE_SET_COMPARISON_COLUMNS = [
+    "comparison_role",
+    "feature_set_version",
+    "reference_label",
+    "model_type",
+    "top_k",
+    "min_holding_days",
+    "switch_margin",
+    "fold_count",
+    "average_total_return",
+    "average_strategy_vs_spy",
+    "average_strategy_vs_qqq",
+    "average_sharpe_like",
+    "average_max_drawdown",
+    "worst_max_drawdown",
+    "average_total_transaction_cost",
+    "average_mean_daily_turnover",
+    "delta_average_total_return_vs_primary",
+    "delta_strategy_vs_spy_vs_primary",
+    "delta_strategy_vs_qqq_vs_primary",
+]
+V2_VS_V1_UNDERPERFORMANCE_DELTA_COLUMNS = [
+    "fold",
+    "benchmark_symbol",
+    "test_start",
+    "test_end",
+    "v2_excess_return_vs_benchmark",
+    "v1_excess_return_vs_benchmark",
+    "delta_excess_return_vs_benchmark",
+    "v2_underperformed_benchmark",
+    "v1_underperformed_benchmark",
+    "underperformance_delta_status",
+]
+V2_SELECTED_SYMBOL_SUMMARY_COLUMNS = [
+    "feature_set_version",
+    *SELECTED_SYMBOL_SUMMARY_COLUMNS,
 ]
 
 
@@ -218,6 +269,9 @@ class TiingoSelectedCandidateRichReplayArtifacts:
     selected_symbol_summary: pd.DataFrame
     rich_replay_summary: pd.DataFrame
     reference_performance: pd.DataFrame
+    feature_set_comparison: pd.DataFrame
+    v2_vs_v1_underperformance_delta: pd.DataFrame
+    v2_selected_symbol_summary: pd.DataFrame
     warnings: tuple[str, ...]
 
 
@@ -292,6 +346,8 @@ def run_tiingo_selected_candidate_rich_replay_from_args(
             step_months=args.step_months,
             transaction_cost_bps=args.transaction_cost_bps,
             include_references=args.include_references,
+            feature_set_version=args.feature_set_version,
+            reference_feature_set_versions=args.reference_feature_set_versions,
             min_history_rows=args.min_history_rows,
             min_train_eligible_rows=args.min_train_eligible_rows,
         )
@@ -366,10 +422,18 @@ def build_tiingo_selected_candidate_rich_replay(
     step_months: int = DEFAULT_STEP_MONTHS,
     transaction_cost_bps: float = DEFAULT_TRANSACTION_COST_BPS,
     include_references: bool = True,
+    feature_set_version: str = DEFAULT_REPLAY_FEATURE_SET_VERSION,
+    reference_feature_set_versions: Sequence[str] = DEFAULT_REFERENCE_FEATURE_SET_VERSIONS,
     min_history_rows: int = DEFAULT_MIN_HISTORY_ROWS,
     min_train_eligible_rows: int = DEFAULT_MIN_TRAIN_ELIGIBLE_ROWS,
 ) -> TiingoSelectedCandidateRichReplayArtifacts:
     """Run/replay the selected candidate and build daily-level artifacts."""
+
+    feature_set_version = validate_feature_set_version(feature_set_version)
+    reference_feature_set_versions = _reference_feature_set_versions(
+        reference_feature_set_versions,
+        primary_feature_set_version=feature_set_version,
+    )
 
     fold_plans = build_tiingo_selected_candidate_rich_replay_folds(
         start_date=start_date,
@@ -388,6 +452,7 @@ def build_tiingo_selected_candidate_rich_replay(
         raw_df=raw_df,
         folds=folds,
         spec=PRIMARY_SPEC,
+        feature_set_version=feature_set_version,
         transaction_cost_bps=transaction_cost_bps,
         min_history_rows=min_history_rows,
     )
@@ -398,15 +463,48 @@ def build_tiingo_selected_candidate_rich_replay(
         transaction_cost_bps=transaction_cost_bps,
     )
 
+    reference_feature_artifacts = _build_reference_feature_set_artifacts(
+        raw_df=raw_df,
+        folds=folds,
+        fold_plans=fold_plans,
+        feature_set_versions=reference_feature_set_versions,
+        transaction_cost_bps=transaction_cost_bps,
+        min_history_rows=min_history_rows,
+    )
+
     reference_performance = pd.DataFrame(columns=REFERENCE_PERFORMANCE_COLUMNS)
     if include_references:
         reference_performance = _build_reference_performance(
             raw_df=raw_df,
-            folds=folds,
+            fold_plans=fold_plans,
             specs=REFERENCE_SPECS,
+            feature_set_version=feature_set_version,
             transaction_cost_bps=transaction_cost_bps,
             min_history_rows=min_history_rows,
         )
+    reference_feature_performance = _build_reference_feature_set_performance(
+        reference_feature_artifacts=reference_feature_artifacts,
+    )
+    if not reference_feature_performance.empty:
+        reference_performance = pd.concat(
+            [reference_performance, reference_feature_performance],
+            ignore_index=True,
+        )
+
+    feature_set_comparison = _build_feature_set_comparison(
+        primary_artifacts=primary_artifacts,
+        primary_feature_set_version=feature_set_version,
+        reference_feature_artifacts=reference_feature_artifacts,
+    )
+    v2_vs_v1_underperformance_delta = _build_v2_vs_v1_underperformance_delta(
+        primary_artifacts=primary_artifacts,
+        primary_feature_set_version=feature_set_version,
+        reference_feature_artifacts=reference_feature_artifacts,
+    )
+    v2_selected_symbol_summary = _build_v2_selected_symbol_summary(
+        selected_symbol_summary=primary_artifacts.selected_symbol_summary,
+        primary_feature_set_version=feature_set_version,
+    )
 
     rich_replay_summary = _build_rich_replay_summary(
         daily_strategy_equity=primary_artifacts.daily_strategy_equity,
@@ -415,6 +513,9 @@ def build_tiingo_selected_candidate_rich_replay(
         fold_performance=primary_artifacts.fold_performance,
         underperformance_windows=primary_artifacts.underperformance_windows,
         reference_performance=reference_performance,
+        feature_set_comparison=feature_set_comparison,
+        feature_set_version=feature_set_version,
+        reference_feature_set_versions=reference_feature_set_versions,
         train_window_years=train_window_years,
         validation_window_months=validation_window_months,
         test_window_months=test_window_months,
@@ -433,6 +534,9 @@ def build_tiingo_selected_candidate_rich_replay(
         selected_symbol_summary=primary_artifacts.selected_symbol_summary,
         rich_replay_summary=rich_replay_summary,
         reference_performance=reference_performance,
+        feature_set_comparison=feature_set_comparison,
+        v2_vs_v1_underperformance_delta=v2_vs_v1_underperformance_delta,
+        v2_selected_symbol_summary=v2_selected_symbol_summary,
         warnings=tuple(_build_warnings(primary_artifacts.fold_performance)),
     )
 
@@ -455,6 +559,11 @@ def write_tiingo_selected_candidate_rich_replay_artifacts(
         SELECTED_SYMBOL_SUMMARY_NAME: output_dir / SELECTED_SYMBOL_SUMMARY_NAME,
         RICH_REPLAY_SUMMARY_NAME: output_dir / RICH_REPLAY_SUMMARY_NAME,
         REFERENCE_PERFORMANCE_NAME: output_dir / REFERENCE_PERFORMANCE_NAME,
+        FEATURE_SET_COMPARISON_NAME: output_dir / FEATURE_SET_COMPARISON_NAME,
+        V2_VS_V1_UNDERPERFORMANCE_DELTA_NAME: (
+            output_dir / V2_VS_V1_UNDERPERFORMANCE_DELTA_NAME
+        ),
+        V2_SELECTED_SYMBOL_SUMMARY_NAME: output_dir / V2_SELECTED_SYMBOL_SUMMARY_NAME,
         REPORT_PATH_NAME: output_dir / REPORT_PATH_NAME,
     }
     artifacts.daily_strategy_equity.to_csv(outputs[DAILY_STRATEGY_EQUITY_NAME], index=False)
@@ -472,6 +581,15 @@ def write_tiingo_selected_candidate_rich_replay_artifacts(
     artifacts.selected_symbol_summary.to_csv(outputs[SELECTED_SYMBOL_SUMMARY_NAME], index=False)
     artifacts.rich_replay_summary.to_csv(outputs[RICH_REPLAY_SUMMARY_NAME], index=False)
     artifacts.reference_performance.to_csv(outputs[REFERENCE_PERFORMANCE_NAME], index=False)
+    artifacts.feature_set_comparison.to_csv(outputs[FEATURE_SET_COMPARISON_NAME], index=False)
+    artifacts.v2_vs_v1_underperformance_delta.to_csv(
+        outputs[V2_VS_V1_UNDERPERFORMANCE_DELTA_NAME],
+        index=False,
+    )
+    artifacts.v2_selected_symbol_summary.to_csv(
+        outputs[V2_SELECTED_SYMBOL_SUMMARY_NAME],
+        index=False,
+    )
     report_data = RichReplayReportData(
         daily_strategy_equity=artifacts.daily_strategy_equity,
         daily_holdings=artifacts.daily_holdings,
@@ -482,6 +600,9 @@ def write_tiingo_selected_candidate_rich_replay_artifacts(
         selected_symbol_summary=artifacts.selected_symbol_summary,
         rich_replay_summary=artifacts.rich_replay_summary,
         reference_performance=artifacts.reference_performance,
+        feature_set_comparison=artifacts.feature_set_comparison,
+        v2_vs_v1_underperformance_delta=artifacts.v2_vs_v1_underperformance_delta,
+        v2_selected_symbol_summary=artifacts.v2_selected_symbol_summary,
     )
     outputs[REPORT_PATH_NAME].write_text(
         render_tiingo_selected_candidate_rich_replay_markdown(report_data),
@@ -506,6 +627,7 @@ def _run_candidate_replay(
     raw_df: pd.DataFrame,
     folds: Sequence[WalkForwardFold],
     spec: RichReplayCandidateSpec,
+    feature_set_version: str,
     transaction_cost_bps: float,
     min_history_rows: int,
 ) -> BaselineE2EExperimentResult:
@@ -522,8 +644,9 @@ def _run_candidate_replay(
                 excess_return_horizons=(LABEL_HORIZON_DAYS,),
                 rank_target_col=TARGET_COL,
                 rank_col=f"rank_{TARGET_COL}",
-                feature_set_version=FEATURE_SET_VERSION,
+                feature_set_version=feature_set_version,
             ),
+            feature_set_version=feature_set_version,
             prediction_col="prediction",
             universe_mode=UNIVERSE_MODE,
             min_history_rows=min_history_rows,
@@ -732,8 +855,12 @@ def _build_rebalance_log(result: BaselineE2EExperimentResult) -> pd.DataFrame:
             selected_symbols = _selected_symbols_for_date(date_group)
             previous_symbol_set = set(previous_symbols)
             selected_symbol_set = set(selected_symbols)
-            added = tuple(symbol for symbol in selected_symbols if symbol not in previous_symbol_set)
-            removed = tuple(symbol for symbol in previous_symbols if symbol not in selected_symbol_set)
+            added = tuple(
+                symbol for symbol in selected_symbols if symbol not in previous_symbol_set
+            )
+            removed = tuple(
+                symbol for symbol in previous_symbols if symbol not in selected_symbol_set
+            )
             turnover, transaction_cost = equity_by_date.get(
                 pd.Timestamp(date_value),
                 (np.nan, np.nan),
@@ -774,7 +901,9 @@ def _selected_symbols_for_date(date_group: pd.DataFrame) -> tuple[str, ...]:
     )
 
 
-def _equity_cost_turnover_by_date(equity_curve: pd.DataFrame) -> dict[pd.Timestamp, tuple[float, float]]:
+def _equity_cost_turnover_by_date(
+    equity_curve: pd.DataFrame,
+) -> dict[pd.Timestamp, tuple[float, float]]:
     if equity_curve.empty:
         return {}
     out = equity_curve.copy()
@@ -936,42 +1065,318 @@ def _build_selected_symbol_summary(daily_holdings: pd.DataFrame) -> pd.DataFrame
 def _build_reference_performance(
     *,
     raw_df: pd.DataFrame,
-    folds: Sequence[WalkForwardFold],
+    fold_plans: Sequence[RichReplayFoldPlan],
     specs: Sequence[RichReplayCandidateSpec],
+    feature_set_version: str,
     transaction_cost_bps: float,
     min_history_rows: int,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
+    folds = [fold_plan.fold for fold_plan in fold_plans]
     for spec in specs:
         result = _run_candidate_replay(
             raw_df=raw_df,
             folds=folds,
             spec=spec,
+            feature_set_version=feature_set_version,
             transaction_cost_bps=transaction_cost_bps,
             min_history_rows=min_history_rows,
         )
-        fold_rows = [_summary_metrics_row(fold_result.test_backtest.summary_metrics) for fold_result in result.fold_results]
-        frame = pd.DataFrame(fold_rows)
+        artifacts = _build_primary_artifacts(
+            raw_df=raw_df,
+            result=result,
+            fold_plans=fold_plans,
+            transaction_cost_bps=transaction_cost_bps,
+        )
+        rows.append(_reference_performance_row_from_artifacts(spec, feature_set_version, artifacts))
+    return pd.DataFrame(rows, columns=REFERENCE_PERFORMANCE_COLUMNS)
+
+
+def _build_reference_feature_set_artifacts(
+    *,
+    raw_df: pd.DataFrame,
+    folds: Sequence[WalkForwardFold],
+    fold_plans: Sequence[RichReplayFoldPlan],
+    feature_set_versions: Sequence[str],
+    transaction_cost_bps: float,
+    min_history_rows: int,
+) -> dict[str, _PrimaryArtifacts]:
+    artifacts_by_feature_set: dict[str, _PrimaryArtifacts] = {}
+    for reference_feature_set_version in feature_set_versions:
+        result = _run_candidate_replay(
+            raw_df=raw_df,
+            folds=folds,
+            spec=PRIMARY_SPEC,
+            feature_set_version=reference_feature_set_version,
+            transaction_cost_bps=transaction_cost_bps,
+            min_history_rows=min_history_rows,
+        )
+        artifacts_by_feature_set[reference_feature_set_version] = _build_primary_artifacts(
+            raw_df=raw_df,
+            result=result,
+            fold_plans=fold_plans,
+            transaction_cost_bps=transaction_cost_bps,
+        )
+    return artifacts_by_feature_set
+
+
+def _build_reference_feature_set_performance(
+    *,
+    reference_feature_artifacts: dict[str, _PrimaryArtifacts],
+) -> pd.DataFrame:
+    rows = [
+        _reference_performance_row_from_artifacts(
+            RichReplayCandidateSpec(
+                role="reference_feature_set",
+                label=f"selected candidate / {feature_set_version}",
+                model_type=PRIMARY_SPEC.model_type,
+                top_k=PRIMARY_SPEC.top_k,
+                min_holding_days=PRIMARY_SPEC.min_holding_days,
+                switch_margin=PRIMARY_SPEC.switch_margin,
+            ),
+            feature_set_version,
+            artifacts,
+        )
+        for feature_set_version, artifacts in reference_feature_artifacts.items()
+    ]
+    return pd.DataFrame(rows, columns=REFERENCE_PERFORMANCE_COLUMNS)
+
+
+def _reference_performance_row_from_artifacts(
+    spec: RichReplayCandidateSpec,
+    feature_set_version: str,
+    artifacts: _PrimaryArtifacts,
+) -> dict[str, object]:
+    fold_performance = artifacts.fold_performance
+    return {
+        "reference_role": spec.role,
+        "reference_label": spec.label,
+        "feature_set_version": feature_set_version,
+        "model_type": spec.model_type,
+        "top_k": spec.top_k,
+        "min_holding_days": spec.min_holding_days,
+        "switch_margin": spec.switch_margin,
+        "fold_count": (
+            int(fold_performance["fold"].nunique()) if not fold_performance.empty else 0
+        ),
+        "average_total_return": _mean_or_nan(fold_performance.get("strategy_total_return")),
+        "average_strategy_vs_spy": _mean_or_nan(fold_performance.get("strategy_vs_spy")),
+        "average_strategy_vs_qqq": _mean_or_nan(fold_performance.get("strategy_vs_qqq")),
+        "average_sharpe_like": _mean_or_nan(fold_performance.get("strategy_sharpe_like")),
+        "average_max_drawdown": _mean_or_nan(
+            fold_performance.get("strategy_max_drawdown")
+        ),
+        "worst_max_drawdown": _min_or_nan(fold_performance.get("strategy_max_drawdown")),
+        "average_total_transaction_cost": _mean_or_nan(
+            fold_performance.get("total_transaction_cost")
+        ),
+        "average_mean_daily_turnover": _mean_or_nan(
+            fold_performance.get("mean_daily_turnover")
+        ),
+    }
+
+
+def _build_feature_set_comparison(
+    *,
+    primary_artifacts: _PrimaryArtifacts,
+    primary_feature_set_version: str,
+    reference_feature_artifacts: dict[str, _PrimaryArtifacts],
+) -> pd.DataFrame:
+    primary_metrics = _feature_set_metrics(primary_artifacts.fold_performance)
+    rows: list[dict[str, object]] = [
+        _feature_set_comparison_row(
+            comparison_role="primary_selected_candidate",
+            feature_set_version=primary_feature_set_version,
+            label=f"selected candidate / {primary_feature_set_version}",
+            metrics=primary_metrics,
+            primary_metrics=primary_metrics,
+        )
+    ]
+    for feature_set_version, artifacts in reference_feature_artifacts.items():
+        rows.append(
+            _feature_set_comparison_row(
+                comparison_role="reference_selected_candidate",
+                feature_set_version=feature_set_version,
+                label=f"selected candidate / {feature_set_version}",
+                metrics=_feature_set_metrics(artifacts.fold_performance),
+                primary_metrics=primary_metrics,
+            )
+        )
+    rows.extend(_benchmark_comparison_rows(primary_artifacts.fold_performance, primary_metrics))
+    return pd.DataFrame(rows, columns=FEATURE_SET_COMPARISON_COLUMNS)
+
+
+def _feature_set_comparison_row(
+    *,
+    comparison_role: str,
+    feature_set_version: str,
+    label: str,
+    metrics: dict[str, float],
+    primary_metrics: dict[str, float],
+) -> dict[str, object]:
+    return {
+        "comparison_role": comparison_role,
+        "feature_set_version": feature_set_version,
+        "reference_label": label,
+        "model_type": PRIMARY_SPEC.model_type,
+        "top_k": PRIMARY_SPEC.top_k,
+        "min_holding_days": PRIMARY_SPEC.min_holding_days,
+        "switch_margin": PRIMARY_SPEC.switch_margin,
+        "fold_count": int(metrics["fold_count"]),
+        "average_total_return": metrics["average_total_return"],
+        "average_strategy_vs_spy": metrics["average_strategy_vs_spy"],
+        "average_strategy_vs_qqq": metrics["average_strategy_vs_qqq"],
+        "average_sharpe_like": metrics["average_sharpe_like"],
+        "average_max_drawdown": metrics["average_max_drawdown"],
+        "worst_max_drawdown": metrics["worst_max_drawdown"],
+        "average_total_transaction_cost": metrics["average_total_transaction_cost"],
+        "average_mean_daily_turnover": metrics["average_mean_daily_turnover"],
+        "delta_average_total_return_vs_primary": (
+            metrics["average_total_return"] - primary_metrics["average_total_return"]
+        ),
+        "delta_strategy_vs_spy_vs_primary": (
+            metrics["average_strategy_vs_spy"] - primary_metrics["average_strategy_vs_spy"]
+        ),
+        "delta_strategy_vs_qqq_vs_primary": (
+            metrics["average_strategy_vs_qqq"] - primary_metrics["average_strategy_vs_qqq"]
+        ),
+    }
+
+
+def _benchmark_comparison_rows(
+    fold_performance: pd.DataFrame,
+    primary_metrics: dict[str, float],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for symbol in DEFAULT_BENCHMARK_SYMBOLS:
+        prefix = symbol.lower()
+        benchmark_return = _mean_or_nan(fold_performance.get(f"{prefix}_total_return"))
+        benchmark_sharpe = _mean_or_nan(fold_performance.get(f"{prefix}_sharpe_like"))
+        benchmark_drawdown = _mean_or_nan(fold_performance.get(f"{prefix}_max_drawdown"))
+        benchmark_worst_drawdown = _min_or_nan(fold_performance.get(f"{prefix}_max_drawdown"))
         rows.append(
             {
-                "reference_role": spec.role,
-                "reference_label": spec.label,
-                "model_type": spec.model_type,
-                "top_k": spec.top_k,
-                "min_holding_days": spec.min_holding_days,
-                "switch_margin": spec.switch_margin,
-                "fold_count": int(len(frame)),
-                "average_total_return": _mean_or_nan(frame.get("total_return")),
-                "average_sharpe_like": _mean_or_nan(frame.get("sharpe_like")),
-                "average_max_drawdown": _mean_or_nan(frame.get("max_drawdown")),
-                "worst_max_drawdown": _min_or_nan(frame.get("max_drawdown")),
-                "average_total_transaction_cost": _mean_or_nan(
-                    frame.get("total_transaction_cost")
+                "comparison_role": "benchmark_buy_and_hold",
+                "feature_set_version": "buy_and_hold",
+                "reference_label": f"{symbol} buy-and-hold",
+                "model_type": "",
+                "top_k": np.nan,
+                "min_holding_days": np.nan,
+                "switch_margin": np.nan,
+                "fold_count": (
+                    int(fold_performance["fold"].nunique())
+                    if not fold_performance.empty
+                    else 0
                 ),
-                "average_mean_daily_turnover": _mean_or_nan(frame.get("mean_daily_turnover")),
+                "average_total_return": benchmark_return,
+                "average_strategy_vs_spy": (
+                    0.0
+                    if symbol == "SPY"
+                    else benchmark_return - _mean_or_nan(fold_performance.get("spy_total_return"))
+                ),
+                "average_strategy_vs_qqq": (
+                    0.0
+                    if symbol == "QQQ"
+                    else benchmark_return - _mean_or_nan(fold_performance.get("qqq_total_return"))
+                ),
+                "average_sharpe_like": benchmark_sharpe,
+                "average_max_drawdown": benchmark_drawdown,
+                "worst_max_drawdown": benchmark_worst_drawdown,
+                "average_total_transaction_cost": 0.0,
+                "average_mean_daily_turnover": 0.0,
+                "delta_average_total_return_vs_primary": (
+                    benchmark_return - primary_metrics["average_total_return"]
+                ),
+                "delta_strategy_vs_spy_vs_primary": np.nan,
+                "delta_strategy_vs_qqq_vs_primary": np.nan,
             }
         )
-    return pd.DataFrame(rows, columns=REFERENCE_PERFORMANCE_COLUMNS)
+    return rows
+
+
+def _feature_set_metrics(fold_performance: pd.DataFrame) -> dict[str, float]:
+    return {
+        "fold_count": (
+            float(fold_performance["fold"].nunique()) if not fold_performance.empty else 0.0
+        ),
+        "average_total_return": _mean_or_nan(fold_performance.get("strategy_total_return")),
+        "average_strategy_vs_spy": _mean_or_nan(fold_performance.get("strategy_vs_spy")),
+        "average_strategy_vs_qqq": _mean_or_nan(fold_performance.get("strategy_vs_qqq")),
+        "average_sharpe_like": _mean_or_nan(fold_performance.get("strategy_sharpe_like")),
+        "average_max_drawdown": _mean_or_nan(
+            fold_performance.get("strategy_max_drawdown")
+        ),
+        "worst_max_drawdown": _min_or_nan(fold_performance.get("strategy_max_drawdown")),
+        "average_total_transaction_cost": _mean_or_nan(
+            fold_performance.get("total_transaction_cost")
+        ),
+        "average_mean_daily_turnover": _mean_or_nan(
+            fold_performance.get("mean_daily_turnover")
+        ),
+    }
+
+
+def _build_v2_vs_v1_underperformance_delta(
+    *,
+    primary_artifacts: _PrimaryArtifacts,
+    primary_feature_set_version: str,
+    reference_feature_artifacts: dict[str, _PrimaryArtifacts],
+) -> pd.DataFrame:
+    if primary_feature_set_version != BENCHMARK_GAP_V2_FEATURE_SET_VERSION:
+        return pd.DataFrame(columns=V2_VS_V1_UNDERPERFORMANCE_DELTA_COLUMNS)
+    v1_artifacts = reference_feature_artifacts.get(BENCHMARK_GAP_FEATURE_SET_VERSION)
+    if v1_artifacts is None:
+        return pd.DataFrame(columns=V2_VS_V1_UNDERPERFORMANCE_DELTA_COLUMNS)
+    v2 = primary_artifacts.underperformance_windows.copy()
+    v1 = v1_artifacts.underperformance_windows.copy()
+    if v2.empty or v1.empty:
+        return pd.DataFrame(columns=V2_VS_V1_UNDERPERFORMANCE_DELTA_COLUMNS)
+    join_cols = ["fold", "benchmark_symbol", "test_start", "test_end"]
+    merged = v2.merge(
+        v1,
+        on=join_cols,
+        how="inner",
+        suffixes=("_v2", "_v1"),
+        validate="one_to_one",
+    )
+    rows: list[dict[str, object]] = []
+    for row in merged.itertuples(index=False):
+        v2_excess = _as_float(row.excess_return_vs_benchmark_v2)
+        v1_excess = _as_float(row.excess_return_vs_benchmark_v1)
+        delta = v2_excess - v1_excess
+        rows.append(
+            {
+                "fold": row.fold,
+                "benchmark_symbol": row.benchmark_symbol,
+                "test_start": row.test_start,
+                "test_end": row.test_end,
+                "v2_excess_return_vs_benchmark": v2_excess,
+                "v1_excess_return_vs_benchmark": v1_excess,
+                "delta_excess_return_vs_benchmark": delta,
+                "v2_underperformed_benchmark": bool(
+                    row.underperformed_benchmark_v2
+                ),
+                "v1_underperformed_benchmark": bool(
+                    row.underperformed_benchmark_v1
+                ),
+                "underperformance_delta_status": _underperformance_delta_status(delta),
+            }
+        )
+    return pd.DataFrame(rows, columns=V2_VS_V1_UNDERPERFORMANCE_DELTA_COLUMNS)
+
+
+def _build_v2_selected_symbol_summary(
+    *,
+    selected_symbol_summary: pd.DataFrame,
+    primary_feature_set_version: str,
+) -> pd.DataFrame:
+    if primary_feature_set_version != BENCHMARK_GAP_V2_FEATURE_SET_VERSION:
+        return pd.DataFrame(columns=V2_SELECTED_SYMBOL_SUMMARY_COLUMNS)
+    if selected_symbol_summary.empty:
+        return pd.DataFrame(columns=V2_SELECTED_SYMBOL_SUMMARY_COLUMNS)
+    out = selected_symbol_summary.copy()
+    out.insert(0, "feature_set_version", primary_feature_set_version)
+    return out.loc[:, V2_SELECTED_SYMBOL_SUMMARY_COLUMNS]
 
 
 def _build_rich_replay_summary(
@@ -982,6 +1387,9 @@ def _build_rich_replay_summary(
     fold_performance: pd.DataFrame,
     underperformance_windows: pd.DataFrame,
     reference_performance: pd.DataFrame,
+    feature_set_comparison: pd.DataFrame,
+    feature_set_version: str,
+    reference_feature_set_versions: Sequence[str],
     train_window_years: Sequence[int],
     validation_window_months: Sequence[int],
     test_window_months: Sequence[int],
@@ -997,13 +1405,19 @@ def _build_rich_replay_summary(
     spy_under_rate = _underperformance_rate(underperformance_windows, "SPY")
     qqq_under_rate = _underperformance_rate(underperformance_windows, "QQQ")
     decision = _decision(
+        feature_set_version=feature_set_version,
         strategy_average_total_return=strategy_avg,
         average_strategy_vs_spy=avg_vs_spy,
         average_strategy_vs_qqq=avg_vs_qqq,
         spy_underperformance_rate=spy_under_rate,
         qqq_underperformance_rate=qqq_under_rate,
     )
-    next_action = _next_action(decision, avg_vs_qqq)
+    next_action = _next_action(
+        decision,
+        average_strategy_vs_qqq=avg_vs_qqq,
+        feature_set_version=feature_set_version,
+        feature_set_comparison=feature_set_comparison,
+    )
     reference_lookup = {
         row.reference_role: row
         for row in reference_performance.itertuples(index=False)
@@ -1024,14 +1438,17 @@ def _build_rich_replay_summary(
         "feature_selection_scope": FEATURE_SELECTION_SCOPE,
         "min_history_rows": min_history_rows,
         "min_train_eligible_rows": min_train_eligible_rows,
-        "feature_set_version": FEATURE_SET_VERSION,
+        "feature_set_version": feature_set_version,
+        "reference_feature_set_versions": _join_values(reference_feature_set_versions),
         "target_col": TARGET_COL,
         "label_horizon_days": LABEL_HORIZON_DAYS,
         "fold_count": int(fold_performance["fold"].nunique()) if not fold_performance.empty else 0,
         "daily_equity_rows": int(len(daily_strategy_equity)),
         "daily_holding_rows": int(len(daily_holdings)),
         "rebalance_count": int(len(rebalance_log)),
-        "selected_symbol_count": int(daily_holdings["symbol"].nunique()) if not daily_holdings.empty else 0,
+        "selected_symbol_count": (
+            int(daily_holdings["symbol"].nunique()) if not daily_holdings.empty else 0
+        ),
         "strategy_average_total_return": strategy_avg,
         "spy_average_total_return": spy_avg,
         "qqq_average_total_return": qqq_avg,
@@ -1065,6 +1482,18 @@ def _build_rich_replay_summary(
             "drawdown_guardrail",
             "average_total_return",
         ),
+        "default_features_v1_reference_average_total_return": _feature_set_reference_value(
+            reference_performance,
+            "default_features_v1",
+            "average_total_return",
+        ),
+        "benchmark_gap_features_v1_reference_average_total_return": (
+            _feature_set_reference_value(
+                reference_performance,
+                BENCHMARK_GAP_FEATURE_SET_VERSION,
+                "average_total_return",
+            )
+        ),
         "decision": decision,
         "next_action": next_action,
         "artifact_caveats": (
@@ -1089,15 +1518,37 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=_parse_max_workers(os.environ.get("MAX_WORKERS", str(DEFAULT_MAX_WORKERS))),
         help="Accepted for shell-runner symmetry; this rich replay currently runs locally.",
     )
-    parser.add_argument("--train-window-years", nargs="+", default=_env_values("TRAIN_WINDOW_YEARS"))
+    parser.add_argument(
+        "--train-window-years",
+        nargs="+",
+        default=_env_values("TRAIN_WINDOW_YEARS"),
+    )
     parser.add_argument(
         "--validation-window-months",
         nargs="+",
         default=_env_values("VALIDATION_WINDOW_MONTHS"),
     )
-    parser.add_argument("--test-window-months", nargs="+", default=_env_values("TEST_WINDOW_MONTHS"))
+    parser.add_argument(
+        "--test-window-months",
+        nargs="+",
+        default=_env_values("TEST_WINDOW_MONTHS"),
+    )
     parser.add_argument("--step-months", default=os.environ.get("STEP_MONTHS"))
     parser.add_argument("--transaction-cost-bps", default=os.environ.get("TRANSACTION_COST_BPS"))
+    parser.add_argument(
+        "--feature-set-version",
+        default=os.environ.get("FEATURE_SET_VERSION", DEFAULT_REPLAY_FEATURE_SET_VERSION),
+        help="Feature set used for the primary selected-candidate replay.",
+    )
+    parser.add_argument(
+        "--reference-feature-set-versions",
+        nargs="+",
+        default=_env_values("REFERENCE_FEATURE_SET_VERSIONS"),
+        help=(
+            "Optional feature sets to replay with the same selected-candidate spec "
+            "for fold-level comparison."
+        ),
+    )
     parser.add_argument(
         "--include-references",
         action=argparse.BooleanOptionalAction,
@@ -1149,6 +1600,18 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
             if args.transaction_cost_bps is not None
             else DEFAULT_TRANSACTION_COST_BPS
         )
+        args.feature_set_version = _parse_feature_set_version(
+            str(args.feature_set_version),
+            "--feature-set-version",
+        )
+        args.reference_feature_set_versions = (
+            _parse_feature_set_version_values(
+                args.reference_feature_set_versions,
+                "--reference-feature-set-versions",
+            )
+            if args.reference_feature_set_versions is not None
+            else DEFAULT_REFERENCE_FEATURE_SET_VERSIONS
+        )
         _parse_date(args.start_date, "--start-date")
         _parse_date(args.end_date, "--end-date")
     except argparse.ArgumentTypeError as exc:
@@ -1181,6 +1644,9 @@ def _print_plan(
         SELECTED_SYMBOL_SUMMARY_NAME,
         RICH_REPLAY_SUMMARY_NAME,
         REFERENCE_PERFORMANCE_NAME,
+        FEATURE_SET_COMPARISON_NAME,
+        V2_VS_V1_UNDERPERFORMANCE_DELTA_NAME,
+        V2_SELECTED_SYMBOL_SUMMARY_NAME,
         REPORT_PATH_NAME,
     ]
     print("US Market ML Tiingo selected-candidate rich replay")
@@ -1202,6 +1668,8 @@ def _print_plan(
     print(f"transaction_cost_bps: {args.transaction_cost_bps:g}")
     print(f"max_workers argument accepted: {args.max_workers}")
     print(f"include_references: {args.include_references}")
+    print(f"feature_set_version: {args.feature_set_version}")
+    print(f"reference_feature_set_versions: {list(args.reference_feature_set_versions)}")
     print(f"model_family: {MODEL_FAMILY}")
     print(f"model_type: {PRIMARY_SPEC.model_type}")
     print(f"top_k: {PRIMARY_SPEC.top_k}")
@@ -1212,7 +1680,6 @@ def _print_plan(
     print(f"feature_selection_scope: {FEATURE_SELECTION_SCOPE}")
     print(f"min_history_rows: {args.min_history_rows}")
     print(f"min_train_eligible_rows: {args.min_train_eligible_rows}")
-    print(f"feature_set_version: {FEATURE_SET_VERSION}")
     print(f"target_col: {TARGET_COL}")
     print(f"label_horizon_days: {LABEL_HORIZON_DAYS}")
     print(f"output directory: {output_dir}")
@@ -1243,6 +1710,8 @@ def _equivalent_command(args: argparse.Namespace) -> list[str]:
         str(args.step_months),
         "--transaction-cost-bps",
         str(args.transaction_cost_bps),
+        "--feature-set-version",
+        str(args.feature_set_version),
         "--min-history-rows",
         str(args.min_history_rows),
         "--min-train-eligible-rows",
@@ -1256,6 +1725,13 @@ def _equivalent_command(args: argparse.Namespace) -> list[str]:
         ]
     )
     command.extend(["--test-window-months", *[str(value) for value in args.test_window_months]])
+    if args.reference_feature_set_versions:
+        command.extend(
+            [
+                "--reference-feature-set-versions",
+                *[str(value) for value in args.reference_feature_set_versions],
+            ]
+        )
     command.append("--include-references" if args.include_references else "--no-include-references")
     return command
 
@@ -1282,7 +1758,9 @@ def _series_metrics(
     return {
         "total_return": float(equity.iloc[-1] - 1.0),
         "sharpe_like": float(sharpe_like),
-        "max_drawdown": float(drawdown.min()) if not drawdown.empty else calculate_max_drawdown(equity),
+        "max_drawdown": (
+            float(drawdown.min()) if not drawdown.empty else calculate_max_drawdown(equity)
+        ),
     }
 
 
@@ -1331,6 +1809,7 @@ def _underperformance_rate(frame: pd.DataFrame, symbol: str) -> float:
 
 def _decision(
     *,
+    feature_set_version: str,
     strategy_average_total_return: float,
     average_strategy_vs_spy: float,
     average_strategy_vs_qqq: float,
@@ -1345,6 +1824,12 @@ def _decision(
     ):
         return "promote as current research baseline target"
     if (
+        feature_set_version == BENCHMARK_GAP_V2_FEATURE_SET_VERSION
+        and average_strategy_vs_spy > 0.0
+        and average_strategy_vs_qqq < 0.0
+    ):
+        return "keep v2 as current best research feature set"
+    if (
         strategy_average_total_return < 0.0
         and average_strategy_vs_spy < 0.0
         and average_strategy_vs_qqq < 0.0
@@ -1353,12 +1838,25 @@ def _decision(
     return "keep selected candidate but not target"
 
 
-def _next_action(decision: str, average_strategy_vs_qqq: float) -> str:
+def _next_action(
+    decision: str,
+    *,
+    average_strategy_vs_qqq: float,
+    feature_set_version: str,
+    feature_set_comparison: pd.DataFrame,
+) -> str:
     if decision == "promote as current research baseline target":
         return "model-card draft"
+    if (
+        feature_set_version == BENCHMARK_GAP_V2_FEATURE_SET_VERSION
+        and _v2_improves_qqq_gap_vs_v1(feature_set_comparison)
+    ):
+        if np.isfinite(average_strategy_vs_qqq) and average_strategy_vs_qqq < 0.0:
+            return "feature engineering v3"
+        return "allocation/risk overlay"
     if np.isfinite(average_strategy_vs_qqq) and average_strategy_vs_qqq < 0.0:
-        return "feature engineering"
-    return "feature engineering"
+        return "feature engineering v3"
+    return "allocation/risk overlay"
 
 
 def _build_warnings(fold_performance: pd.DataFrame) -> list[str]:
@@ -1386,6 +1884,61 @@ def _reference_value(
     return _as_float(getattr(row, attr, np.nan))
 
 
+def _feature_set_reference_value(
+    reference_performance: pd.DataFrame,
+    feature_set_version: str,
+    column: str,
+) -> float:
+    required_columns = {"reference_role", "feature_set_version", column}
+    if reference_performance.empty or not required_columns.issubset(
+        reference_performance.columns
+    ):
+        return np.nan
+    rows = reference_performance.loc[
+        reference_performance["reference_role"].astype(str).eq("reference_feature_set")
+        & reference_performance["feature_set_version"].astype(str).eq(feature_set_version)
+    ]
+    if rows.empty:
+        return np.nan
+    return _as_float(rows.iloc[0][column])
+
+
+def _v2_improves_qqq_gap_vs_v1(feature_set_comparison: pd.DataFrame) -> bool:
+    if feature_set_comparison.empty:
+        return False
+    primary = feature_set_comparison.loc[
+        feature_set_comparison["feature_set_version"].astype(str).eq(
+            BENCHMARK_GAP_V2_FEATURE_SET_VERSION
+        )
+        & feature_set_comparison["comparison_role"].astype(str).eq(
+            "primary_selected_candidate"
+        )
+    ]
+    v1 = feature_set_comparison.loc[
+        feature_set_comparison["feature_set_version"].astype(str).eq(
+            BENCHMARK_GAP_FEATURE_SET_VERSION
+        )
+        & feature_set_comparison["comparison_role"].astype(str).eq(
+            "reference_selected_candidate"
+        )
+    ]
+    if primary.empty or v1.empty:
+        return False
+    primary_gap = _as_float(primary.iloc[0].get("average_strategy_vs_qqq"))
+    v1_gap = _as_float(v1.iloc[0].get("average_strategy_vs_qqq"))
+    return bool(np.isfinite(primary_gap) and np.isfinite(v1_gap) and primary_gap > v1_gap)
+
+
+def _underperformance_delta_status(delta: float) -> str:
+    if not np.isfinite(delta):
+        return "unknown"
+    if delta > 0.0:
+        return "improved"
+    if delta < 0.0:
+        return "worsened"
+    return "unchanged"
+
+
 def _join_values(values: Sequence[object]) -> str:
     return " ".join(str(value) for value in values)
 
@@ -1399,6 +1952,47 @@ def _env_values(name: str) -> list[str] | None:
     if raw_value is None or raw_value.strip() == "":
         return None
     return shlex.split(raw_value)
+
+
+def _parse_feature_set_version(value: str, parameter_name: str) -> str:
+    stripped = str(value).strip()
+    if not stripped:
+        raise argparse.ArgumentTypeError(f"{parameter_name} requires a non-empty value.")
+    try:
+        return validate_feature_set_version(stripped)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _parse_feature_set_version_values(
+    values: Sequence[str],
+    parameter_name: str,
+) -> tuple[str, ...]:
+    parsed_values: list[str] = []
+    for value in values:
+        for part in str(value).split(","):
+            stripped = part.strip()
+            if not stripped:
+                continue
+            parsed_values.append(_parse_feature_set_version(stripped, parameter_name))
+    if not parsed_values:
+        raise argparse.ArgumentTypeError(f"{parameter_name} requires at least one value.")
+    return tuple(dict.fromkeys(parsed_values))
+
+
+def _reference_feature_set_versions(
+    values: Sequence[str],
+    *,
+    primary_feature_set_version: str,
+) -> tuple[str, ...]:
+    if not values:
+        return tuple()
+    validated = _parse_feature_set_version_values(values, "--reference-feature-set-versions")
+    return tuple(
+        feature_set_version
+        for feature_set_version in validated
+        if feature_set_version != primary_feature_set_version
+    )
 
 
 def _as_float(value: object) -> float:

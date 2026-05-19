@@ -35,6 +35,8 @@ def test_rich_replay_report_reads_artifacts_and_includes_decision_caveats(
     assert "Artifact limitations" in markdown
     assert "not production-ready" in markdown
     assert "QQQ buy-and-hold remains stronger" in markdown
+    assert "Comparison vs default_features_v1 selected candidate" in markdown
+    assert "Comparison vs benchmark_gap_features_v1 selected candidate" in markdown
 
 
 def test_render_rich_replay_report_from_loaded_frames(tmp_path: Path) -> None:
@@ -45,15 +47,41 @@ def test_render_rich_replay_report_from_loaded_frames(tmp_path: Path) -> None:
 
     assert "Executive summary" in markdown
     assert "Strategy configuration" in markdown
-    assert "Benchmark comparison vs SPY/QQQ" in markdown
+    assert "Comparison vs SPY and QQQ" in markdown
     assert "Fold-by-fold performance" in markdown
-    assert "Underperformance windows" in markdown
+    assert "Underperformance windows versus SPY and QQQ" in markdown
     assert "Holdings / selected symbols" in markdown
     assert "Turnover diagnostics" in markdown
     assert "historical ML champion" in markdown
 
 
-def _write_report_inputs(base: Path) -> None:
+def test_render_rich_replay_report_includes_v2_feature_references(tmp_path: Path) -> None:
+    _write_report_inputs(
+        tmp_path,
+        feature_set_version="benchmark_gap_features_v2",
+        decision="keep v2 as current best research feature set",
+        next_action="feature engineering v3",
+    )
+
+    artifact_data = read_rich_replay_artifacts(tmp_path)
+    markdown = render_tiingo_selected_candidate_rich_replay_markdown(artifact_data)
+
+    assert "Feature set used: `benchmark_gap_features_v2`" in markdown
+    assert "SPY" in markdown
+    assert "QQQ" in markdown
+    assert "default_features_v1" in markdown
+    assert "benchmark_gap_features_v1" in markdown
+    assert "keep v2 as current best research feature set" in markdown
+    assert "not production-ready evidence" in markdown
+
+
+def _write_report_inputs(
+    base: Path,
+    *,
+    feature_set_version: str = "default_features_v1",
+    decision: str = "keep selected candidate but not target",
+    next_action: str = "feature engineering v3",
+) -> None:
     pd.DataFrame(
         [
             {
@@ -213,7 +241,12 @@ def _write_report_inputs(base: Path) -> None:
                 "feature_selection_scope": "fold_train",
                 "min_history_rows": 5,
                 "min_train_eligible_rows": 1,
-                "feature_set_version": "default_features_v1",
+                "feature_set_version": feature_set_version,
+                "reference_feature_set_versions": (
+                    "default_features_v1 benchmark_gap_features_v1"
+                    if feature_set_version == "benchmark_gap_features_v2"
+                    else ""
+                ),
                 "target_col": "excess_return_vs_spy_20d",
                 "label_horizon_days": 20,
                 "fold_count": 1,
@@ -230,8 +263,8 @@ def _write_report_inputs(base: Path) -> None:
                 "strategy_worst_max_drawdown": -0.01,
                 "spy_average_max_drawdown": -0.02,
                 "qqq_average_max_drawdown": -0.03,
-                "decision": "keep selected candidate but not target",
-                "next_action": "feature engineering",
+                "decision": decision,
+                "next_action": next_action,
                 "artifact_caveats": "not production-ready",
             }
         ]
@@ -241,12 +274,15 @@ def _write_report_inputs(base: Path) -> None:
             {
                 "reference_role": "historical_champion",
                 "reference_label": "linear_regression / top1 / hold10 / margin0.002 / cost10",
+                "feature_set_version": feature_set_version,
                 "model_type": "linear_regression",
                 "top_k": 1,
                 "min_holding_days": 10,
                 "switch_margin": 0.002,
                 "fold_count": 1,
                 "average_total_return": 0.005,
+                "average_strategy_vs_spy": 0.0,
+                "average_strategy_vs_qqq": -0.01,
                 "average_sharpe_like": 0.5,
                 "average_max_drawdown": -0.02,
                 "worst_max_drawdown": -0.02,
@@ -255,3 +291,123 @@ def _write_report_inputs(base: Path) -> None:
             }
         ]
     ).to_csv(base / "reference_performance.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "comparison_role": "primary_selected_candidate",
+                "feature_set_version": feature_set_version,
+                "reference_label": f"selected candidate / {feature_set_version}",
+                "model_type": "ridge",
+                "top_k": 5,
+                "min_holding_days": 20,
+                "switch_margin": 0.005,
+                "fold_count": 1,
+                "average_total_return": 0.01,
+                "average_strategy_vs_spy": 0.005,
+                "average_strategy_vs_qqq": -0.01,
+                "average_sharpe_like": 1.0,
+                "average_max_drawdown": -0.01,
+                "worst_max_drawdown": -0.01,
+                "average_total_transaction_cost": 0.001,
+                "average_mean_daily_turnover": 0.1,
+                "delta_average_total_return_vs_primary": 0.0,
+                "delta_strategy_vs_spy_vs_primary": 0.0,
+                "delta_strategy_vs_qqq_vs_primary": 0.0,
+            },
+            {
+                "comparison_role": "reference_selected_candidate",
+                "feature_set_version": "default_features_v1",
+                "reference_label": "selected candidate / default_features_v1",
+                "model_type": "ridge",
+                "top_k": 5,
+                "min_holding_days": 20,
+                "switch_margin": 0.005,
+                "fold_count": 1,
+                "average_total_return": 0.008,
+                "average_strategy_vs_spy": 0.003,
+                "average_strategy_vs_qqq": -0.012,
+                "average_sharpe_like": 0.8,
+                "average_max_drawdown": -0.012,
+                "worst_max_drawdown": -0.012,
+                "average_total_transaction_cost": 0.001,
+                "average_mean_daily_turnover": 0.1,
+                "delta_average_total_return_vs_primary": -0.002,
+                "delta_strategy_vs_spy_vs_primary": -0.002,
+                "delta_strategy_vs_qqq_vs_primary": -0.002,
+            },
+            {
+                "comparison_role": "reference_selected_candidate",
+                "feature_set_version": "benchmark_gap_features_v1",
+                "reference_label": "selected candidate / benchmark_gap_features_v1",
+                "model_type": "ridge",
+                "top_k": 5,
+                "min_holding_days": 20,
+                "switch_margin": 0.005,
+                "fold_count": 1,
+                "average_total_return": 0.009,
+                "average_strategy_vs_spy": 0.004,
+                "average_strategy_vs_qqq": -0.011,
+                "average_sharpe_like": 0.9,
+                "average_max_drawdown": -0.011,
+                "worst_max_drawdown": -0.011,
+                "average_total_transaction_cost": 0.001,
+                "average_mean_daily_turnover": 0.1,
+                "delta_average_total_return_vs_primary": -0.001,
+                "delta_strategy_vs_spy_vs_primary": -0.001,
+                "delta_strategy_vs_qqq_vs_primary": -0.001,
+            },
+            {
+                "comparison_role": "benchmark_buy_and_hold",
+                "feature_set_version": "buy_and_hold",
+                "reference_label": "SPY buy-and-hold",
+                "fold_count": 1,
+                "average_total_return": 0.005,
+                "average_strategy_vs_spy": 0.0,
+                "average_strategy_vs_qqq": -0.015,
+                "average_max_drawdown": -0.02,
+                "delta_average_total_return_vs_primary": -0.005,
+            },
+            {
+                "comparison_role": "benchmark_buy_and_hold",
+                "feature_set_version": "buy_and_hold",
+                "reference_label": "QQQ buy-and-hold",
+                "fold_count": 1,
+                "average_total_return": 0.02,
+                "average_strategy_vs_spy": 0.015,
+                "average_strategy_vs_qqq": 0.0,
+                "average_max_drawdown": -0.03,
+                "delta_average_total_return_vs_primary": 0.01,
+            },
+        ]
+    ).to_csv(base / "feature_set_comparison.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "fold": "fold_1",
+                "benchmark_symbol": "QQQ",
+                "test_start": "2021-02-01",
+                "test_end": "2021-04-30",
+                "v2_excess_return_vs_benchmark": -0.01,
+                "v1_excess_return_vs_benchmark": -0.011,
+                "delta_excess_return_vs_benchmark": 0.001,
+                "v2_underperformed_benchmark": True,
+                "v1_underperformed_benchmark": True,
+                "underperformance_delta_status": "improved",
+            }
+        ]
+    ).to_csv(base / "v2_vs_v1_underperformance_delta.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "feature_set_version": feature_set_version,
+                "symbol": "QQQ",
+                "selected_days": 12,
+                "selected_fold_count": 1,
+                "avg_target_weight": 0.2,
+                "avg_prediction": 0.1,
+                "avg_signal_rank": 1.0,
+                "first_selected_date": "2021-02-01",
+                "last_selected_date": "2021-02-12",
+            }
+        ]
+    ).to_csv(base / "v2_selected_symbol_summary.csv", index=False)
