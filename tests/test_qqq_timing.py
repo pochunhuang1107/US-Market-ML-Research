@@ -14,8 +14,10 @@ from us_market_ml.qqq_timing import (
     build_qqq_timing_signal,
     calculate_qqq_defensive_timing_subperiod_results,
     default_qqq_defensive_timing_narrow_sweep_specs,
+    default_qqq_defensive_timing_selected_replay_spec,
     default_qqq_defensive_timing_sweep_specs,
     default_qqq_timing_strategy_specs,
+    run_qqq_defensive_timing_selected_replay,
     run_qqq_defensive_timing_strategy,
     run_qqq_timing_strategy,
 )
@@ -258,6 +260,19 @@ def test_narrow_defensive_sweep_parameter_grid_count_matches_requested_ranges() 
         if spec.family == "low_turnover_crossover_cash"
     )
     assert warnings == ()
+
+
+def test_selected_defensive_replay_spec_matches_best_narrow_candidate() -> None:
+    spec = default_qqq_defensive_timing_selected_replay_spec()
+
+    assert spec.strategy_name == "qqq_sma190_buffer_p0p5_hold0_to_spy"
+    assert spec.family == "total_return_spy_defensive"
+    assert spec.risk_on_asset == "QQQ"
+    assert spec.risk_off_asset == "SPY"
+    assert spec.signal_name == "qqq_sma_price_filter"
+    assert spec.slow_sma_days == 190
+    assert spec.buffer_pct == pytest.approx(0.005)
+    assert spec.min_hold_days == 0
 
 
 def test_defensive_sma_price_filter_applies_next_day_without_future_data() -> None:
@@ -552,12 +567,68 @@ def test_defensive_subperiod_metrics_reset_first_period_return() -> None:
     assert tail["strategy_vs_qqq"] == pytest.approx(0.0)
     assert tail["transaction_count"] == 0
     assert tail["exposure_rate_to_qqq"] == pytest.approx(1.0)
+    assert tail["spy_max_drawdown"] == pytest.approx(0.0)
+    assert tail["strategy_vs_spy"] == pytest.approx(
+        (120.0 / 110.0 - 1.0) - (110.0 / 105.0 - 1.0)
+    )
+    assert tail["exposure_rate_to_spy"] == pytest.approx(0.0)
+
+
+def test_selected_defensive_replay_preserves_next_day_timing_convention() -> None:
+    market_data = _market_data_from_prices(
+        _price_matrix(
+            {
+                "QQQ": [100.0, 100.0, 120.0, 121.0],
+                "SPY": [100.0, 101.0, 102.0, 103.0],
+            }
+        )
+    )
+    spec = default_qqq_defensive_timing_selected_replay_spec(
+        slow_sma_days=3,
+        buffer_pct=0.0,
+    )
+
+    replay = run_qqq_defensive_timing_selected_replay(
+        market_data,
+        start_date="2020-01-01",
+        end_date="2020-01-06",
+        transaction_cost_bps=0.0,
+        selected_spec=spec,
+    )
+
+    selected = replay.daily_equity.loc[
+        replay.daily_equity["strategy_name"].eq("qqq_sma190_buffer_p0p5_hold0_to_spy")
+    ].reset_index(drop=True)
+    assert bool(selected.loc[2, "raw_signal_risk_on"])
+    assert not bool(selected.loc[2, "effective_signal_risk_on"])
+    assert selected.loc[2, "active_asset"] == "SPY"
+    assert bool(selected.loc[3, "effective_signal_risk_on"])
+    assert selected.loc[3, "active_asset"] == "QQQ"
 
 
 def _price_matrix(symbol_prices: dict[str, object]) -> pd.DataFrame:
     length = len(next(iter(symbol_prices.values())))
     dates = pd.bdate_range("2020-01-01", periods=length)
     return pd.DataFrame(symbol_prices, index=dates, dtype=float)
+
+
+def _market_data_from_prices(prices: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for date, row in prices.iterrows():
+        for symbol, close in row.items():
+            rows.append(
+                {
+                    "date": date,
+                    "symbol": symbol,
+                    "open": close,
+                    "high": close,
+                    "low": close,
+                    "close": close,
+                    "volume": 1_000_000,
+                    "vwap": close,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def _volatility_guard_prices(*, calm_tail: bool) -> np.ndarray:

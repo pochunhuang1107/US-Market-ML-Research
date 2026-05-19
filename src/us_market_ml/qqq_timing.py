@@ -206,13 +206,17 @@ DEFENSIVE_SUBPERIOD_RESULT_COLUMNS: tuple[str, ...] = (
     "qqq_buy_hold_total_return",
     "spy_buy_hold_total_return",
     "strategy_vs_qqq",
+    "strategy_vs_spy",
     "max_drawdown",
     "qqq_max_drawdown",
+    "spy_max_drawdown",
     "transaction_count",
     "exposure_rate_to_qqq",
+    "exposure_rate_to_spy",
 )
 
 MATERIAL_DRAWDOWN_IMPROVEMENT = 0.05
+SELECTED_QQQ_DEFENSIVE_TIMING_STRATEGY_NAME = "qqq_sma190_buffer_p0p5_hold0_to_spy"
 
 _SMA_PRICE_FILTER_FAMILIES = {
     "sma_price_filter_to_cash",
@@ -298,6 +302,18 @@ class QQQDefensiveTimingNarrowSweepResult:
     warnings: tuple[str, ...]
     timing_config_count: int
     total_strategy_count: int
+
+
+@dataclass(frozen=True)
+class QQQDefensiveTimingSelectedReplayResult:
+    """Outputs from the selected QQQ defensive timing replay bundle."""
+
+    results: pd.DataFrame
+    daily_equity: pd.DataFrame
+    trades: pd.DataFrame
+    subperiod_results: pd.DataFrame
+    skipped_strategies: tuple[str, ...]
+    warnings: tuple[str, ...]
 
 
 def default_qqq_timing_strategy_specs(
@@ -485,6 +501,28 @@ def default_qqq_defensive_timing_narrow_sweep_specs(
     return (
         (*_defensive_benchmark_specs(), *_raw_defensive_timing_narrow_sweep_specs()),
         tuple(dict.fromkeys(warnings)),
+    )
+
+
+def default_qqq_defensive_timing_selected_replay_spec(
+    *,
+    strategy_name: str = SELECTED_QQQ_DEFENSIVE_TIMING_STRATEGY_NAME,
+    slow_sma_days: int = 190,
+    buffer_pct: float = 0.005,
+    min_hold_days: int = 0,
+    risk_off_asset: str = "SPY",
+) -> QQQDefensiveTimingStrategySpec:
+    """Return the selected narrow-sweep QQQ defensive replay configuration."""
+
+    return QQQDefensiveTimingStrategySpec(
+        strategy_name=strategy_name,
+        family="total_return_spy_defensive",
+        risk_on_asset="QQQ",
+        risk_off_asset=risk_off_asset,
+        signal_name="qqq_sma_price_filter",
+        slow_sma_days=slow_sma_days,
+        buffer_pct=buffer_pct,
+        min_hold_days=min_hold_days,
     )
 
 
@@ -1006,6 +1044,74 @@ def run_qqq_defensive_timing_narrow_sweep(
         warnings=tuple(dict.fromkeys(warnings)),
         timing_config_count=timing_config_count,
         total_strategy_count=len(specs),
+    )
+
+
+def run_qqq_defensive_timing_selected_replay(
+    market_data: pd.DataFrame,
+    *,
+    start_date: str | pd.Timestamp,
+    end_date: str | pd.Timestamp,
+    transaction_cost_bps: float = 10.0,
+    selected_spec: QQQDefensiveTimingStrategySpec | None = None,
+    subperiods: Sequence[tuple[str, str, str]] = DEFENSIVE_TIMING_SUBPERIODS,
+) -> QQQDefensiveTimingSelectedReplayResult:
+    """Run the selected QQQ defensive timing candidate plus benchmark references."""
+
+    prices = prepare_qqq_timing_prices(
+        market_data,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    spec = selected_spec or default_qqq_defensive_timing_selected_replay_spec()
+    specs = (spec, *_defensive_benchmark_specs())
+
+    result_rows: list[dict[str, object]] = []
+    daily_frames: list[pd.DataFrame] = []
+    trade_frames: list[pd.DataFrame] = []
+    skipped: list[str] = []
+    warnings: list[str] = []
+
+    for strategy_spec in specs:
+        if _strategy_has_missing_price_rows(prices, strategy_spec):
+            skipped.append(strategy_spec.strategy_name)
+            warnings.append(
+                f"Skipping {strategy_spec.strategy_name}: required asset has missing prices "
+                "inside the selected replay window."
+            )
+            continue
+        metrics, daily_equity, trades = run_qqq_defensive_timing_strategy(
+            prices,
+            strategy_spec,
+            transaction_cost_bps=transaction_cost_bps,
+        )
+        result_rows.append(metrics)
+        daily_frames.append(daily_equity)
+        trade_frames.append(trades)
+
+    results = pd.DataFrame(result_rows, columns=DEFENSIVE_RESULT_COLUMNS)
+    daily_equity = (
+        pd.concat(daily_frames, ignore_index=True)
+        if daily_frames
+        else pd.DataFrame(columns=DEFENSIVE_DAILY_EQUITY_COLUMNS)
+    )
+    trades = (
+        pd.concat(trade_frames, ignore_index=True)
+        if trade_frames
+        else pd.DataFrame(columns=DEFENSIVE_TRADE_COLUMNS)
+    )
+    subperiod_results = calculate_qqq_defensive_timing_subperiod_results(
+        daily_equity=daily_equity,
+        prices=prices,
+        subperiods=subperiods,
+    )
+    return QQQDefensiveTimingSelectedReplayResult(
+        results=results,
+        daily_equity=daily_equity,
+        trades=trades,
+        subperiod_results=subperiod_results,
+        skipped_strategies=tuple(skipped),
+        warnings=tuple(dict.fromkeys(warnings)),
     )
 
 
@@ -1641,6 +1747,7 @@ def _defensive_subperiod_metric_row(
     qqq_total_return = float(qqq_equity.iloc[-1] - 1.0) if not qqq_equity.empty else np.nan
     spy_total_return = float(spy_equity.iloc[-1] - 1.0) if not spy_equity.empty else np.nan
     qqq_max_drawdown = calculate_max_drawdown(qqq_equity) if not qqq_equity.empty else np.nan
+    spy_max_drawdown = calculate_max_drawdown(spy_equity) if not spy_equity.empty else np.nan
     active_asset = period_daily["active_asset"].astype(str)
 
     return {
@@ -1652,10 +1759,13 @@ def _defensive_subperiod_metric_row(
         "qqq_buy_hold_total_return": qqq_total_return,
         "spy_buy_hold_total_return": spy_total_return,
         "strategy_vs_qqq": total_return - qqq_total_return,
+        "strategy_vs_spy": total_return - spy_total_return,
         "max_drawdown": max_drawdown,
         "qqq_max_drawdown": qqq_max_drawdown,
+        "spy_max_drawdown": spy_max_drawdown,
         "transaction_count": int(active_asset.ne(active_asset.shift(1)).iloc[1:].sum()),
         "exposure_rate_to_qqq": float(active_asset.eq("QQQ").mean()),
+        "exposure_rate_to_spy": float(active_asset.eq("SPY").mean()),
     }
 
 
@@ -1853,11 +1963,13 @@ __all__ = [
     "OPTIONAL_RISK_OFF_SYMBOLS",
     "QQQDefensiveTimingStrategySpec",
     "QQQDefensiveTimingNarrowSweepResult",
+    "QQQDefensiveTimingSelectedReplayResult",
     "QQQDefensiveTimingSweepResult",
     "QQQTimingStrategySpec",
     "QQQTimingStudyResult",
     "REQUIRED_SYMBOLS",
     "RESULT_COLUMNS",
+    "SELECTED_QQQ_DEFENSIVE_TIMING_STRATEGY_NAME",
     "TRADE_COLUMNS",
     "available_symbol_summary",
     "build_qqq_defensive_timing_signal",
@@ -1865,10 +1977,12 @@ __all__ = [
     "build_qqq_timing_signal",
     "calculate_qqq_defensive_timing_subperiod_results",
     "default_qqq_defensive_timing_narrow_sweep_specs",
+    "default_qqq_defensive_timing_selected_replay_spec",
     "default_qqq_defensive_timing_sweep_specs",
     "default_qqq_timing_strategy_specs",
     "prepare_qqq_timing_prices",
     "run_qqq_defensive_timing_narrow_sweep",
+    "run_qqq_defensive_timing_selected_replay",
     "run_qqq_defensive_timing_strategy",
     "run_qqq_defensive_timing_sweep",
     "run_qqq_timing_strategy",
