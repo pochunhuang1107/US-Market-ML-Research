@@ -12,6 +12,8 @@ from us_market_ml.qqq_timing import (
     build_qqq_defensive_timing_signal,
     build_qqq_timing_indicators,
     build_qqq_timing_signal,
+    calculate_qqq_defensive_timing_subperiod_results,
+    default_qqq_defensive_timing_narrow_sweep_specs,
     default_qqq_defensive_timing_sweep_specs,
     default_qqq_timing_strategy_specs,
     run_qqq_defensive_timing_strategy,
@@ -230,6 +232,34 @@ def test_defensive_sweep_parameter_grid_count_is_focused() -> None:
     assert reductions == ()
 
 
+def test_narrow_defensive_sweep_parameter_grid_count_matches_requested_ranges() -> None:
+    specs, warnings = default_qqq_defensive_timing_narrow_sweep_specs(
+        {"QQQ", "SPY", "IEF", "TLT", "SHY"}
+    )
+    timing_specs = [spec for spec in specs if not spec.is_benchmark]
+    family_counts = Counter(spec.family for spec in timing_specs)
+    names = {spec.strategy_name for spec in timing_specs}
+
+    assert len(specs) == 429
+    assert len(timing_specs) == 426
+    assert family_counts == {
+        "total_return_spy_defensive": 144,
+        "drawdown_adjusted_cash_defensive": 90,
+        "low_turnover_crossover_cash": 192,
+    }
+    assert "qqq_sma180_buffer_p0_hold0_to_spy" in names
+    assert "qqq_sma200_buffer_p1_hold10_cash" in names
+    assert "qqq_sma75_sma200_buffer_m1_hold0_cash" in names
+    assert "qqq_sma100_sma200_buffer_m1_hold0_cash" in names
+    assert any("buffer_p0p5" in name for name in names)
+    assert all(
+        spec.fast_sma_days < spec.slow_sma_days
+        for spec in timing_specs
+        if spec.family == "low_turnover_crossover_cash"
+    )
+    assert warnings == ()
+
+
 def test_defensive_sma_price_filter_applies_next_day_without_future_data() -> None:
     qqq = [100.0] * 149 + [120.0, 121.0]
     prices = _price_matrix({"QQQ": qqq, "SPY": np.linspace(100.0, 110.0, len(qqq))})
@@ -257,6 +287,37 @@ def test_defensive_sma_price_filter_applies_next_day_without_future_data() -> No
     assert daily_equity.loc[150, "active_asset"] == "QQQ"
 
 
+def test_narrow_sma_price_filter_family_applies_next_day_without_future_data() -> None:
+    prices = _price_matrix(
+        {
+            "QQQ": [100.0, 100.0, 120.0, 121.0],
+            "SPY": [100.0, 101.0, 102.0, 103.0],
+        }
+    )
+    spec = QQQDefensiveTimingStrategySpec(
+        "qqq_sma3_buffer_p0_hold0_to_spy",
+        family="total_return_spy_defensive",
+        risk_on_asset="QQQ",
+        risk_off_asset="SPY",
+        signal_name="qqq_sma_price_filter",
+        slow_sma_days=3,
+        buffer_pct=0.0,
+        min_hold_days=0,
+    )
+
+    _, daily_equity, _ = run_qqq_defensive_timing_strategy(
+        prices,
+        spec,
+        transaction_cost_bps=0.0,
+    )
+
+    assert bool(daily_equity.loc[2, "raw_signal_risk_on"])
+    assert not bool(daily_equity.loc[2, "effective_signal_risk_on"])
+    assert daily_equity.loc[2, "active_asset"] == "SPY"
+    assert bool(daily_equity.loc[3, "effective_signal_risk_on"])
+    assert daily_equity.loc[3, "active_asset"] == "QQQ"
+
+
 def test_defensive_sma_crossover_applies_next_day_without_future_data() -> None:
     prices = _price_matrix(
         {
@@ -267,6 +328,38 @@ def test_defensive_sma_crossover_applies_next_day_without_future_data() -> None:
     spec = QQQDefensiveTimingStrategySpec(
         "qqq_sma2_sma3_buffer_p0_hold0_cash",
         family="sma_crossover_to_cash",
+        risk_on_asset="QQQ",
+        risk_off_asset="cash",
+        signal_name="qqq_sma_crossover",
+        fast_sma_days=2,
+        slow_sma_days=3,
+        buffer_pct=0.0,
+        min_hold_days=0,
+    )
+
+    _, daily_equity, _ = run_qqq_defensive_timing_strategy(
+        prices,
+        spec,
+        transaction_cost_bps=0.0,
+    )
+
+    assert bool(daily_equity.loc[2, "raw_signal_risk_on"])
+    assert not bool(daily_equity.loc[2, "effective_signal_risk_on"])
+    assert daily_equity.loc[2, "active_asset"] == "cash"
+    assert bool(daily_equity.loc[3, "effective_signal_risk_on"])
+    assert daily_equity.loc[3, "active_asset"] == "QQQ"
+
+
+def test_narrow_crossover_family_applies_next_day_without_future_data() -> None:
+    prices = _price_matrix(
+        {
+            "QQQ": [100.0, 100.0, 120.0, 121.0],
+            "SPY": [100.0, 100.1, 100.2, 100.3],
+        }
+    )
+    spec = QQQDefensiveTimingStrategySpec(
+        "qqq_sma2_sma3_buffer_p0_hold0_cash",
+        family="low_turnover_crossover_cash",
         risk_on_asset="QQQ",
         risk_off_asset="cash",
         signal_name="qqq_sma_crossover",
@@ -418,6 +511,47 @@ def test_defensive_transaction_costs_are_applied_on_position_changes() -> None:
     assert trades["estimated_transaction_cost"].sum() == pytest.approx(
         daily_equity["transaction_cost"].sum()
     )
+
+
+def test_defensive_subperiod_metrics_reset_first_period_return() -> None:
+    prices = _price_matrix(
+        {
+            "QQQ": [100.0, 110.0, 99.0, 120.0],
+            "SPY": [100.0, 105.0, 105.0, 110.0],
+        }
+    )
+    spec = QQQDefensiveTimingStrategySpec(
+        "qqq_buy_hold",
+        family="benchmark",
+        risk_on_asset="QQQ",
+        risk_off_asset="",
+        signal_name="buy_hold",
+        is_benchmark=True,
+    )
+    _, daily_equity, _ = run_qqq_defensive_timing_strategy(
+        prices,
+        spec,
+        transaction_cost_bps=0.0,
+    )
+
+    subperiods = calculate_qqq_defensive_timing_subperiod_results(
+        daily_equity=daily_equity,
+        prices=prices,
+        subperiods=(
+            ("full", "2020-01-01", "2020-01-06"),
+            ("tail", "2020-01-02", "2020-01-06"),
+        ),
+    )
+
+    full = subperiods.loc[subperiods["period_name"].eq("full")].iloc[0]
+    tail = subperiods.loc[subperiods["period_name"].eq("tail")].iloc[0]
+
+    assert full["total_return"] == pytest.approx(0.20)
+    assert tail["total_return"] == pytest.approx(120.0 / 110.0 - 1.0)
+    assert tail["qqq_buy_hold_total_return"] == pytest.approx(120.0 / 110.0 - 1.0)
+    assert tail["strategy_vs_qqq"] == pytest.approx(0.0)
+    assert tail["transaction_count"] == 0
+    assert tail["exposure_rate_to_qqq"] == pytest.approx(1.0)
 
 
 def _price_matrix(symbol_prices: dict[str, object]) -> pd.DataFrame:

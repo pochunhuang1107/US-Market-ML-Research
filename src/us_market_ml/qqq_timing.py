@@ -183,7 +183,48 @@ DEFENSIVE_TIMING_FAMILIES: tuple[str, ...] = (
     "regime_score_defensive_to_cash",
 )
 
+NARROW_DEFENSIVE_TIMING_FAMILIES: tuple[str, ...] = (
+    "total_return_spy_defensive",
+    "drawdown_adjusted_cash_defensive",
+    "low_turnover_crossover_cash",
+)
+
+DEFENSIVE_TIMING_SUBPERIODS: tuple[tuple[str, str, str], ...] = (
+    ("full", "2019-01-01", "2026-05-15"),
+    ("covid_crash_recovery", "2020-01-01", "2020-12-31"),
+    ("bear_2022", "2022-01-01", "2022-12-31"),
+    ("ai_bull_2023_2024", "2023-01-01", "2024-12-31"),
+    ("recent_2025_2026", "2025-01-01", "2026-05-15"),
+)
+
+DEFENSIVE_SUBPERIOD_RESULT_COLUMNS: tuple[str, ...] = (
+    "strategy_name",
+    "period_name",
+    "period_start",
+    "period_end",
+    "total_return",
+    "qqq_buy_hold_total_return",
+    "spy_buy_hold_total_return",
+    "strategy_vs_qqq",
+    "max_drawdown",
+    "qqq_max_drawdown",
+    "transaction_count",
+    "exposure_rate_to_qqq",
+)
+
 MATERIAL_DRAWDOWN_IMPROVEMENT = 0.05
+
+_SMA_PRICE_FILTER_FAMILIES = {
+    "sma_price_filter_to_cash",
+    "sma_price_filter_to_spy",
+    "total_return_spy_defensive",
+    "drawdown_adjusted_cash_defensive",
+}
+
+_SMA_CROSSOVER_FAMILIES = {
+    "sma_crossover_to_cash",
+    "low_turnover_crossover_cash",
+}
 
 
 @dataclass(frozen=True)
@@ -241,6 +282,20 @@ class QQQDefensiveTimingSweepResult:
     skipped_strategies: tuple[str, ...]
     warnings: tuple[str, ...]
     reductions: tuple[str, ...]
+    timing_config_count: int
+    total_strategy_count: int
+
+
+@dataclass(frozen=True)
+class QQQDefensiveTimingNarrowSweepResult:
+    """Outputs from the narrow QQQ defensive timing robustness sweep."""
+
+    results: pd.DataFrame
+    daily_equity: pd.DataFrame
+    trades: pd.DataFrame
+    subperiod_results: pd.DataFrame
+    skipped_strategies: tuple[str, ...]
+    warnings: tuple[str, ...]
     timing_config_count: int
     total_strategy_count: int
 
@@ -408,6 +463,31 @@ def default_qqq_defensive_timing_sweep_specs(
     )
 
 
+def default_qqq_defensive_timing_narrow_sweep_specs(
+    available_symbols: set[str] | None = None,
+) -> tuple[tuple[QQQDefensiveTimingStrategySpec, ...], tuple[str, ...]]:
+    """Return the narrow Tiingo QQQ defensive timing sweep grid.
+
+    The grid intentionally stays close to the two strongest prior defensive
+    timing candidates and their nearest SMA/crossover neighbors. It contains
+    426 non-benchmark timing configurations plus QQQ, SPY, and cash references.
+    """
+
+    warnings: list[str] = []
+    if available_symbols is not None:
+        for symbol in OPTIONAL_RISK_OFF_SYMBOLS:
+            if symbol not in available_symbols:
+                warnings.append(
+                    f"Optional risk-off asset {symbol} is missing; no {symbol} variants "
+                    "are included in this narrow cash/SPY sweep."
+                )
+
+    return (
+        (*_defensive_benchmark_specs(), *_raw_defensive_timing_narrow_sweep_specs()),
+        tuple(dict.fromkeys(warnings)),
+    )
+
+
 def prepare_qqq_timing_prices(
     market_data: pd.DataFrame,
     *,
@@ -558,12 +638,12 @@ def build_qqq_defensive_timing_signal(
     qqq_close = pd.to_numeric(prices["QQQ"], errors="coerce")
     qqq_daily_return = qqq_close.pct_change()
 
-    if spec.family in {"sma_price_filter_to_cash", "sma_price_filter_to_spy"}:
+    if spec.family in _SMA_PRICE_FILTER_FAMILIES:
         slow_sma_days = _require_int(spec.slow_sma_days, "slow_sma_days", spec)
         buffer_pct = _require_float(spec.buffer_pct, "buffer_pct", spec)
         slow_sma = qqq_close.rolling(window=slow_sma_days, min_periods=slow_sma_days).mean()
         signal = qqq_close > slow_sma * (1.0 + buffer_pct)
-    elif spec.family == "sma_crossover_to_cash":
+    elif spec.family in _SMA_CROSSOVER_FAMILIES:
         fast_sma_days = _require_int(spec.fast_sma_days, "fast_sma_days", spec)
         slow_sma_days = _require_int(spec.slow_sma_days, "slow_sma_days", spec)
         if fast_sma_days >= slow_sma_days:
@@ -857,6 +937,119 @@ def run_qqq_defensive_timing_sweep(
     )
 
 
+def run_qqq_defensive_timing_narrow_sweep(
+    market_data: pd.DataFrame,
+    *,
+    start_date: str | pd.Timestamp,
+    end_date: str | pd.Timestamp,
+    transaction_cost_bps: float = 10.0,
+    subperiods: Sequence[tuple[str, str, str]] = DEFENSIVE_TIMING_SUBPERIODS,
+) -> QQQDefensiveTimingNarrowSweepResult:
+    """Run the narrow Tiingo-only QQQ defensive timing robustness sweep."""
+
+    prices = prepare_qqq_timing_prices(
+        market_data,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    available_symbols = set(prices.columns[prices.notna().any()].astype(str))
+    specs, strategy_warnings = default_qqq_defensive_timing_narrow_sweep_specs(
+        available_symbols,
+    )
+
+    result_rows: list[dict[str, object]] = []
+    daily_frames: list[pd.DataFrame] = []
+    trade_frames: list[pd.DataFrame] = []
+    skipped: list[str] = []
+    warnings = list(strategy_warnings)
+
+    for spec in specs:
+        if _strategy_has_missing_price_rows(prices, spec):
+            skipped.append(spec.strategy_name)
+            warnings.append(
+                f"Skipping {spec.strategy_name}: {spec.risk_off_asset} has missing prices "
+                "inside the narrow sweep window."
+            )
+            continue
+        metrics, daily_equity, trades = run_qqq_defensive_timing_strategy(
+            prices,
+            spec,
+            transaction_cost_bps=transaction_cost_bps,
+        )
+        result_rows.append(metrics)
+        daily_frames.append(daily_equity)
+        trade_frames.append(trades)
+
+    results = pd.DataFrame(result_rows, columns=DEFENSIVE_RESULT_COLUMNS)
+    daily_equity = (
+        pd.concat(daily_frames, ignore_index=True)
+        if daily_frames
+        else pd.DataFrame(columns=DEFENSIVE_DAILY_EQUITY_COLUMNS)
+    )
+    trades = (
+        pd.concat(trade_frames, ignore_index=True)
+        if trade_frames
+        else pd.DataFrame(columns=DEFENSIVE_TRADE_COLUMNS)
+    )
+    subperiod_results = calculate_qqq_defensive_timing_subperiod_results(
+        daily_equity=daily_equity,
+        prices=prices,
+        subperiods=subperiods,
+    )
+    timing_config_count = sum(1 for spec in specs if not spec.is_benchmark)
+    return QQQDefensiveTimingNarrowSweepResult(
+        results=results,
+        daily_equity=daily_equity,
+        trades=trades,
+        subperiod_results=subperiod_results,
+        skipped_strategies=tuple(skipped),
+        warnings=tuple(dict.fromkeys(warnings)),
+        timing_config_count=timing_config_count,
+        total_strategy_count=len(specs),
+    )
+
+
+def calculate_qqq_defensive_timing_subperiod_results(
+    *,
+    daily_equity: pd.DataFrame,
+    prices: pd.DataFrame,
+    subperiods: Sequence[tuple[str, str, str]] = DEFENSIVE_TIMING_SUBPERIODS,
+) -> pd.DataFrame:
+    """Calculate leakage-safe strategy and benchmark metrics by subperiod."""
+
+    if daily_equity.empty:
+        return pd.DataFrame(columns=DEFENSIVE_SUBPERIOD_RESULT_COLUMNS)
+
+    _validate_price_symbols(prices, REQUIRED_SYMBOLS)
+    price_frame = prices.copy()
+    price_frame.index = pd.to_datetime(price_frame.index)
+    daily = daily_equity.copy()
+    daily["date"] = pd.to_datetime(daily["date"])
+    daily = daily.sort_values(["strategy_name", "date"], kind="mergesort")
+
+    rows: list[dict[str, object]] = []
+    for strategy_name, strategy_daily in daily.groupby("strategy_name", sort=False):
+        for period_name, period_start, period_end in subperiods:
+            start = pd.Timestamp(period_start)
+            end = pd.Timestamp(period_end)
+            period_daily = strategy_daily.loc[strategy_daily["date"].between(start, end)]
+            period_prices = price_frame.loc[price_frame.index.to_series().between(start, end)]
+            if period_daily.empty or period_prices.empty:
+                continue
+            rows.append(
+                _defensive_subperiod_metric_row(
+                    strategy_name=str(strategy_name),
+                    period_name=period_name,
+                    period_start=period_start,
+                    period_end=period_end,
+                    period_daily=period_daily,
+                    period_prices=period_prices,
+                )
+            )
+
+    return pd.DataFrame(rows, columns=DEFENSIVE_SUBPERIOD_RESULT_COLUMNS)
+
+
 def run_qqq_timing_study(
     market_data: pd.DataFrame,
     *,
@@ -1127,6 +1320,73 @@ def _raw_defensive_timing_sweep_specs() -> tuple[QQQDefensiveTimingStrategySpec,
     return tuple(specs)
 
 
+def _raw_defensive_timing_narrow_sweep_specs() -> tuple[QQQDefensiveTimingStrategySpec, ...]:
+    specs: list[QQQDefensiveTimingStrategySpec] = []
+
+    for slow_sma_days in (165, 170, 175, 180, 185, 190, 195, 200, 205):
+        for buffer_pct in (-0.005, 0.0, 0.005, 0.01):
+            for min_hold_days in (0, 3, 5, 10):
+                specs.append(
+                    QQQDefensiveTimingStrategySpec(
+                        strategy_name=(
+                            f"qqq_sma{slow_sma_days}_buffer_"
+                            f"{_parameter_token(buffer_pct)}_hold{min_hold_days}_to_spy"
+                        ),
+                        family="total_return_spy_defensive",
+                        risk_on_asset="QQQ",
+                        risk_off_asset="SPY",
+                        signal_name="qqq_sma_price_filter",
+                        slow_sma_days=slow_sma_days,
+                        buffer_pct=buffer_pct,
+                        min_hold_days=min_hold_days,
+                    )
+                )
+
+    for slow_sma_days in (180, 190, 200, 210, 220):
+        for buffer_pct in (-0.02, -0.01, 0.0, 0.005, 0.01, 0.02):
+            for min_hold_days in (5, 10, 15):
+                specs.append(
+                    QQQDefensiveTimingStrategySpec(
+                        strategy_name=(
+                            f"qqq_sma{slow_sma_days}_buffer_"
+                            f"{_parameter_token(buffer_pct)}_hold{min_hold_days}_cash"
+                        ),
+                        family="drawdown_adjusted_cash_defensive",
+                        risk_on_asset="QQQ",
+                        risk_off_asset=RISK_FREE_ASSET,
+                        signal_name="qqq_sma_price_filter",
+                        slow_sma_days=slow_sma_days,
+                        buffer_pct=buffer_pct,
+                        min_hold_days=min_hold_days,
+                    )
+                )
+
+    for fast_sma_days in (60, 75, 90, 100):
+        for slow_sma_days in (180, 200, 220, 240):
+            if fast_sma_days >= slow_sma_days:
+                continue
+            for buffer_pct in (-0.015, -0.01, -0.005, 0.0):
+                for min_hold_days in (0, 5, 10):
+                    specs.append(
+                        QQQDefensiveTimingStrategySpec(
+                            strategy_name=(
+                                f"qqq_sma{fast_sma_days}_sma{slow_sma_days}_buffer_"
+                                f"{_parameter_token(buffer_pct)}_hold{min_hold_days}_cash"
+                            ),
+                            family="low_turnover_crossover_cash",
+                            risk_on_asset="QQQ",
+                            risk_off_asset=RISK_FREE_ASSET,
+                            signal_name="qqq_sma_crossover",
+                            slow_sma_days=slow_sma_days,
+                            fast_sma_days=fast_sma_days,
+                            buffer_pct=buffer_pct,
+                            min_hold_days=min_hold_days,
+                        )
+                    )
+
+    return tuple(specs)
+
+
 def _reduce_defensive_timing_sweep(
     specs: tuple[QQQDefensiveTimingStrategySpec, ...],
     *,
@@ -1157,12 +1417,18 @@ def _reduce_defensive_timing_sweep(
 
 
 def _parameter_token(value: float) -> str:
-    scaled = int(round(value * 100))
+    scaled = round(float(value) * 100, 3)
     if scaled < 0:
-        return f"m{abs(scaled)}"
+        return f"m{_format_parameter_magnitude(abs(scaled))}"
     if scaled > 0:
-        return f"p{scaled}"
+        return f"p{_format_parameter_magnitude(scaled)}"
     return "p0"
+
+
+def _format_parameter_magnitude(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:g}".replace(".", "p")
 
 
 def _validate_price_symbols(prices: pd.DataFrame, symbols: Sequence[str]) -> None:
@@ -1352,6 +1618,47 @@ def _build_defensive_trade_frame(
     return trades.loc[:, DEFENSIVE_TRADE_COLUMNS].assign(strategy_name=spec.strategy_name)
 
 
+def _defensive_subperiod_metric_row(
+    *,
+    strategy_name: str,
+    period_name: str,
+    period_start: str,
+    period_end: str,
+    period_daily: pd.DataFrame,
+    period_prices: pd.DataFrame,
+) -> dict[str, object]:
+    returns = pd.to_numeric(period_daily["daily_return"], errors="coerce").fillna(0.0).copy()
+    if not returns.empty:
+        returns.iloc[0] = 0.0
+    equity = (1.0 + returns).cumprod()
+    total_return = float(equity.iloc[-1] - 1.0) if not equity.empty else np.nan
+    max_drawdown = calculate_max_drawdown(equity) if not equity.empty else np.nan
+
+    qqq_daily = pd.to_numeric(period_prices["QQQ"], errors="coerce").pct_change().fillna(0.0)
+    spy_daily = pd.to_numeric(period_prices["SPY"], errors="coerce").pct_change().fillna(0.0)
+    qqq_equity = (1.0 + qqq_daily).cumprod()
+    spy_equity = (1.0 + spy_daily).cumprod()
+    qqq_total_return = float(qqq_equity.iloc[-1] - 1.0) if not qqq_equity.empty else np.nan
+    spy_total_return = float(spy_equity.iloc[-1] - 1.0) if not spy_equity.empty else np.nan
+    qqq_max_drawdown = calculate_max_drawdown(qqq_equity) if not qqq_equity.empty else np.nan
+    active_asset = period_daily["active_asset"].astype(str)
+
+    return {
+        "strategy_name": strategy_name,
+        "period_name": period_name,
+        "period_start": period_start,
+        "period_end": period_end,
+        "total_return": total_return,
+        "qqq_buy_hold_total_return": qqq_total_return,
+        "spy_buy_hold_total_return": spy_total_return,
+        "strategy_vs_qqq": total_return - qqq_total_return,
+        "max_drawdown": max_drawdown,
+        "qqq_max_drawdown": qqq_max_drawdown,
+        "transaction_count": int(active_asset.ne(active_asset.shift(1)).iloc[1:].sum()),
+        "exposure_rate_to_qqq": float(active_asset.eq("QQQ").mean()),
+    }
+
+
 def _strategy_metrics(
     *,
     spec: QQQTimingStrategySpec,
@@ -1538,10 +1845,14 @@ __all__ = [
     "DEFENSIVE_DAILY_EQUITY_COLUMNS",
     "DEFENSIVE_PARAMETER_COLUMNS",
     "DEFENSIVE_RESULT_COLUMNS",
+    "DEFENSIVE_SUBPERIOD_RESULT_COLUMNS",
+    "DEFENSIVE_TIMING_SUBPERIODS",
     "DEFENSIVE_TIMING_FAMILIES",
     "DEFENSIVE_TRADE_COLUMNS",
+    "NARROW_DEFENSIVE_TIMING_FAMILIES",
     "OPTIONAL_RISK_OFF_SYMBOLS",
     "QQQDefensiveTimingStrategySpec",
+    "QQQDefensiveTimingNarrowSweepResult",
     "QQQDefensiveTimingSweepResult",
     "QQQTimingStrategySpec",
     "QQQTimingStudyResult",
@@ -1552,9 +1863,12 @@ __all__ = [
     "build_qqq_defensive_timing_signal",
     "build_qqq_timing_indicators",
     "build_qqq_timing_signal",
+    "calculate_qqq_defensive_timing_subperiod_results",
+    "default_qqq_defensive_timing_narrow_sweep_specs",
     "default_qqq_defensive_timing_sweep_specs",
     "default_qqq_timing_strategy_specs",
     "prepare_qqq_timing_prices",
+    "run_qqq_defensive_timing_narrow_sweep",
     "run_qqq_defensive_timing_strategy",
     "run_qqq_defensive_timing_sweep",
     "run_qqq_timing_strategy",

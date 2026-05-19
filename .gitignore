@@ -34,3 +34,4 @@ scripts/*_with_progress.sh
 !scripts/run_tiingo_v3_allocation_overlay_study.sh
 !scripts/run_tiingo_qqq_timing_baseline_study.sh
 !scripts/run_tiingo_qqq_defensive_timing_sweep.sh
+!scripts/run_tiingo_qqq_defensive_timing_narrow_sweep.sh
