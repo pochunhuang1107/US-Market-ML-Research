@@ -6,6 +6,7 @@ import pytest
 from us_market_ml.allocation_overlays import (
     AllocationOverlaySpec,
     apply_allocation_overlay,
+    default_pure_weighted_allocation_specs,
     validate_overlay_weights,
 )
 
@@ -45,6 +46,122 @@ def test_score_weighted_allocation_sums_to_one_and_respects_cap() -> None:
     assert validate_overlay_weights(out)
 
 
+def test_top1_allocation_sums_to_one() -> None:
+    signals = _signals_for_date("2024-01-02")
+    spec = _pure_spec("top1_only")
+
+    out = apply_allocation_overlay(signals, spec, top_k=5)
+    selected = _selected(out)
+
+    assert selected["symbol"].tolist() == ["AAA"]
+    assert selected["target_weight"].sum() == pytest.approx(1.0)
+    assert selected["target_weight"].tolist() == pytest.approx([1.0])
+    assert validate_overlay_weights(out)
+
+
+@pytest.mark.parametrize(
+    ("rule_name", "expected_count", "expected_weight"),
+    [
+        ("top2_equal_weight", 2, 0.50),
+        ("top3_equal_weight", 3, 1.0 / 3.0),
+        ("equal_weight_top5_baseline", 5, 0.20),
+    ],
+)
+def test_topn_equal_allocations_sum_to_one(
+    rule_name: str,
+    expected_count: int,
+    expected_weight: float,
+) -> None:
+    signals = _signals_for_date("2024-01-02")
+    spec = _pure_spec(rule_name)
+
+    out = apply_allocation_overlay(signals, spec, top_k=5)
+    selected = _selected(out)
+
+    assert len(selected) == expected_count
+    assert selected["target_weight"].sum() == pytest.approx(1.0)
+    assert selected["target_weight"].tolist() == pytest.approx(
+        [expected_weight] * expected_count
+    )
+    assert validate_overlay_weights(out)
+
+
+@pytest.mark.parametrize(
+    ("rule_name", "expected_weights"),
+    [
+        ("top5_rank_decay_mild", [0.30, 0.25, 0.20, 0.15, 0.10]),
+        ("top3_rank_decay", [0.50, 0.30, 0.20]),
+    ],
+)
+def test_pure_rank_decay_allocations_sum_to_one(
+    rule_name: str,
+    expected_weights: list[float],
+) -> None:
+    signals = _signals_for_date("2024-01-02")
+    spec = _pure_spec(rule_name)
+
+    out = apply_allocation_overlay(signals, spec, top_k=5)
+    selected = _selected(out)
+
+    assert selected["target_weight"].sum() == pytest.approx(1.0)
+    assert selected["target_weight"].tolist() == pytest.approx(expected_weights)
+    assert validate_overlay_weights(out)
+
+
+@pytest.mark.parametrize(
+    ("rule_name", "expected_count", "cap"),
+    [
+        ("score_weighted_top3_cap050", 3, 0.50),
+        ("score_weighted_top5_cap035", 5, 0.35),
+    ],
+)
+def test_pure_score_weighted_allocations_sum_to_one_and_respect_caps(
+    rule_name: str,
+    expected_count: int,
+    cap: float,
+) -> None:
+    signals = _signals_for_date(
+        "2024-01-02",
+        predictions={"AAA": 0.10, "BBB": 0.06, "CCC": 0.03, "DDD": 0.01, "EEE": -0.02},
+    )
+    spec = _pure_spec(rule_name)
+
+    out = apply_allocation_overlay(signals, spec, top_k=5)
+    selected = _selected(out)
+
+    assert len(selected) == expected_count
+    assert selected["target_weight"].sum() == pytest.approx(1.0)
+    assert selected["target_weight"].max() <= cap + 1.0e-12
+    assert validate_overlay_weights(out)
+
+
+@pytest.mark.parametrize(
+    ("rule_name", "expected_count", "cap"),
+    [
+        ("softmax_top3_temp_low", 3, 0.50),
+        ("softmax_top5_temp_low", 5, 0.35),
+    ],
+)
+def test_softmax_allocations_sum_to_one_and_respect_caps(
+    rule_name: str,
+    expected_count: int,
+    cap: float,
+) -> None:
+    signals = _signals_for_date(
+        "2024-01-02",
+        predictions={"AAA": 0.12, "BBB": 0.06, "CCC": 0.03, "DDD": 0.01, "EEE": 0.00},
+    )
+    spec = _pure_spec(rule_name)
+
+    out = apply_allocation_overlay(signals, spec, top_k=5)
+    selected = _selected(out)
+
+    assert len(selected) == expected_count
+    assert selected["target_weight"].sum() == pytest.approx(1.0)
+    assert selected["target_weight"].max() <= cap + 1.0e-12
+    assert validate_overlay_weights(out)
+
+
 def test_score_weighted_allocation_falls_back_to_equal_when_scores_are_negative() -> None:
     signals = _signals_for_date(
         "2024-01-02",
@@ -60,6 +177,59 @@ def test_score_weighted_allocation_falls_back_to_equal_when_scores_are_negative(
     selected = _selected(out)
 
     assert selected["target_weight"].tolist() == pytest.approx([0.20] * 5)
+
+
+def test_qqq_ranked_rule_does_not_force_qqq_when_qqq_is_not_selected() -> None:
+    signals = _signals_for_date("2024-01-02")
+    spec = _pure_spec("qqq_if_ranked_top3_else_model")
+
+    out = apply_allocation_overlay(signals, spec, top_k=5)
+    selected = _selected(out)
+
+    assert "QQQ" not in selected["symbol"].tolist()
+    assert len(selected) == 5
+    assert selected["target_weight"].sum() == pytest.approx(1.0)
+
+
+def test_qqq_ranked_rule_uses_fallback_when_qqq_rank_is_too_low() -> None:
+    signals = _signals_for_date(
+        "2024-01-02",
+        selected_symbols=("AAA", "BBB", "CCC", "QQQ", "DDD"),
+    )
+    spec = _pure_spec("qqq_if_ranked_top3_else_model")
+
+    out = apply_allocation_overlay(signals, spec, top_k=5)
+    selected = _selected(out)
+
+    assert selected["symbol"].tolist() == ["AAA", "BBB", "CCC", "QQQ", "DDD"]
+    assert selected.loc[selected["symbol"].eq("QQQ"), "target_weight"].iloc[0] == pytest.approx(
+        0.20
+    )
+    assert len(selected) == 5
+    assert validate_overlay_weights(out)
+
+
+@pytest.mark.parametrize(
+    ("rule_name", "selected_symbols"),
+    [
+        ("qqq_if_ranked_top3_else_model", ("AAA", "BBB", "QQQ", "CCC", "DDD")),
+        ("qqq_if_ranked_top2_else_top5", ("AAA", "QQQ", "BBB", "CCC", "DDD")),
+    ],
+)
+def test_qqq_ranked_rules_include_qqq_when_rank_condition_is_met(
+    rule_name: str,
+    selected_symbols: tuple[str, ...],
+) -> None:
+    signals = _signals_for_date("2024-01-02", selected_symbols=selected_symbols)
+    spec = _pure_spec(rule_name)
+
+    out = apply_allocation_overlay(signals, spec, top_k=5)
+    selected = _selected(out)
+
+    assert "QQQ" in selected["symbol"].tolist()
+    assert len(selected) == 3
+    assert selected["target_weight"].sum() == pytest.approx(1.0)
+    assert validate_overlay_weights(out)
 
 
 def test_qqq_core_allocation_combines_when_qqq_is_selected() -> None:
@@ -169,3 +339,8 @@ def _selected(signals: pd.DataFrame) -> pd.DataFrame:
         .sort_values(["signal_rank", "symbol"], kind="mergesort")
         .reset_index(drop=True)
     )
+
+
+def _pure_spec(name: str) -> AllocationOverlaySpec:
+    specs = {spec.name: spec for spec in default_pure_weighted_allocation_specs()}
+    return specs[name]
