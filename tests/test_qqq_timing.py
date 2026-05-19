@@ -13,13 +13,17 @@ from us_market_ml.qqq_timing import (
     build_qqq_timing_indicators,
     build_qqq_timing_signal,
     calculate_qqq_defensive_timing_subperiod_results,
+    calculate_qqq_defensive_timing_walk_forward_summary,
     default_qqq_defensive_timing_narrow_sweep_specs,
     default_qqq_defensive_timing_selected_replay_spec,
     default_qqq_defensive_timing_sweep_specs,
     default_qqq_timing_strategy_specs,
+    discover_qqq_spy_price_coverage,
+    generate_qqq_defensive_timing_validation_windows,
     run_qqq_defensive_timing_selected_replay,
     run_qqq_defensive_timing_strategy,
     run_qqq_timing_strategy,
+    select_qqq_spy_common_validation_window,
 )
 
 
@@ -606,6 +610,98 @@ def test_selected_defensive_replay_preserves_next_day_timing_convention() -> Non
     assert selected.loc[3, "active_asset"] == "QQQ"
 
 
+def test_qqq_spy_coverage_discovers_common_window_and_auto_start() -> None:
+    dates = pd.bdate_range("2020-01-01", periods=8)
+    rows: list[dict[str, object]] = []
+    for date, close in zip(dates, np.linspace(100.0, 110.0, len(dates)), strict=True):
+        rows.append(
+            {
+                "date": date,
+                "symbol": "QQQ",
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1_000_000,
+                "vwap": close,
+            }
+        )
+    for date, close in zip(dates[2:7], np.linspace(90.0, 95.0, 5), strict=True):
+        rows.append(
+            {
+                "date": date,
+                "symbol": "SPY",
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1_000_000,
+                "vwap": close,
+            }
+        )
+    coverage = discover_qqq_spy_price_coverage(pd.DataFrame(rows))
+
+    assert coverage["qqq_first_date"] == "2020-01-01"
+    assert coverage["spy_first_date"] == str(dates[2].date())
+    assert coverage["common_start_date"] == str(dates[2].date())
+    assert coverage["common_end_date"] == str(dates[6].date())
+    assert coverage["trading_days"] == 5
+
+    window = select_qqq_spy_common_validation_window(
+        coverage,
+        requested_start_date="auto",
+        requested_end_date="2020-12-31",
+    )
+
+    assert window["start_date"] == str(dates[2].date())
+    assert window["end_date"] == str(dates[6].date())
+    assert not bool(window["longer_history_available"])
+    assert "limited by local Tiingo" in str(window["coverage_note"])
+
+
+def test_validation_rolling_window_generation_uses_available_trading_dates() -> None:
+    dates = pd.bdate_range("2020-01-02", "2023-03-31")
+
+    windows = generate_qqq_defensive_timing_validation_windows(
+        dates,
+        window_specs=((1, 3), (2, 3), (5, 12)),
+    )
+
+    assert set(windows["window_length_years"]) == {1, 2}
+    assert not windows.loc[windows["window_length_years"].eq(1)].empty
+    assert not windows.loc[windows["window_length_years"].eq(2)].empty
+    assert not any(windows["window_length_years"].eq(5))
+    first = windows.iloc[0]
+    assert first["window_label"].startswith("1y_")
+    assert first["start_date"] == "2020-01-02"
+    assert first["end_date"] <= "2021-01-01"
+    assert first["trading_days"] > 200
+
+
+def test_walk_forward_summary_aggregates_by_horizon_and_all_windows() -> None:
+    windows = pd.DataFrame(
+        [
+            _walk_forward_row("1y_a", 1, 0.05, 0.02, -0.10, 2),
+            _walk_forward_row("1y_b", 1, -0.02, -0.01, -0.20, 4),
+            _walk_forward_row("2y_a", 2, -0.10, 0.03, -0.30, 6),
+        ]
+    )
+
+    summary = calculate_qqq_defensive_timing_walk_forward_summary(windows)
+
+    all_row = summary.loc[summary["window_group"].eq("all")].iloc[0]
+    one_year = summary.loc[summary["window_group"].eq("1y")].iloc[0]
+
+    assert all_row["window_count"] == 3
+    assert all_row["qqq_underperformance_rate"] == pytest.approx(2 / 3)
+    assert all_row["drawdown_improvement_window_rate"] == pytest.approx(2 / 3)
+    assert all_row["worst_strategy_vs_qqq_window"] == "2y_a"
+    assert all_row["worst_drawdown_window"] == "2y_a"
+    assert all_row["average_transaction_count"] == pytest.approx(4.0)
+    assert one_year["window_count"] == 2
+    assert one_year["median_strategy_vs_qqq"] == pytest.approx(0.015)
+
+
 def _price_matrix(symbol_prices: dict[str, object]) -> pd.DataFrame:
     length = len(next(iter(symbol_prices.values())))
     dates = pd.bdate_range("2020-01-01", periods=length)
@@ -629,6 +725,43 @@ def _market_data_from_prices(prices: pd.DataFrame) -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows)
+
+
+def _walk_forward_row(
+    label: str,
+    years: int,
+    strategy_vs_qqq: float,
+    drawdown_improvement: float,
+    strategy_max_drawdown: float,
+    transaction_count: int,
+) -> dict[str, object]:
+    return {
+        "strategy_name": "qqq_sma190_buffer_p0p5_hold0_to_spy",
+        "window_label": label,
+        "window_length_years": years,
+        "step_months": 3,
+        "window_index": 1,
+        "start_date": "2020-01-01",
+        "end_date": "2020-12-31",
+        "trading_days": 252,
+        "strategy_total_return": 0.10,
+        "qqq_total_return": 0.10 - strategy_vs_qqq,
+        "spy_total_return": 0.05,
+        "strategy_vs_qqq": strategy_vs_qqq,
+        "strategy_vs_spy": 0.05,
+        "strategy_max_drawdown": strategy_max_drawdown,
+        "qqq_max_drawdown": strategy_max_drawdown - drawdown_improvement,
+        "spy_max_drawdown": -0.15,
+        "drawdown_improvement_vs_qqq": drawdown_improvement,
+        "return_to_drawdown": 1.0,
+        "qqq_return_to_drawdown": 0.8,
+        "return_to_drawdown_delta": 0.2,
+        "transaction_count": transaction_count,
+        "exposure_rate_to_qqq": 0.7,
+        "exposure_rate_to_spy": 0.3,
+        "underperformed_qqq": strategy_vs_qqq < 0,
+        "materially_improved_drawdown": drawdown_improvement >= 0.05,
+    }
 
 
 def _volatility_guard_prices(*, calm_tail: bool) -> np.ndarray:

@@ -217,6 +217,73 @@ DEFENSIVE_SUBPERIOD_RESULT_COLUMNS: tuple[str, ...] = (
 
 MATERIAL_DRAWDOWN_IMPROVEMENT = 0.05
 SELECTED_QQQ_DEFENSIVE_TIMING_STRATEGY_NAME = "qqq_sma190_buffer_p0p5_hold0_to_spy"
+QQQ_DEFENSIVE_TIMING_VALIDATION_BASELINE_START = "2019-01-01"
+
+QQQ_DEFENSIVE_TIMING_VALIDATION_WINDOW_SPECS: tuple[tuple[int, int], ...] = (
+    (1, 3),
+    (2, 3),
+    (3, 6),
+    (5, 12),
+)
+
+QQQ_DEFENSIVE_TIMING_VALIDATION_WINDOW_COLUMNS: tuple[str, ...] = (
+    "window_label",
+    "window_length_years",
+    "step_months",
+    "window_index",
+    "nominal_start_date",
+    "nominal_end_date",
+    "start_date",
+    "end_date",
+    "trading_days",
+)
+
+QQQ_DEFENSIVE_TIMING_VALIDATION_WALK_FORWARD_COLUMNS: tuple[str, ...] = (
+    "strategy_name",
+    "window_label",
+    "window_length_years",
+    "step_months",
+    "window_index",
+    "start_date",
+    "end_date",
+    "trading_days",
+    "strategy_total_return",
+    "qqq_total_return",
+    "spy_total_return",
+    "strategy_vs_qqq",
+    "strategy_vs_spy",
+    "strategy_max_drawdown",
+    "qqq_max_drawdown",
+    "spy_max_drawdown",
+    "drawdown_improvement_vs_qqq",
+    "return_to_drawdown",
+    "qqq_return_to_drawdown",
+    "return_to_drawdown_delta",
+    "transaction_count",
+    "exposure_rate_to_qqq",
+    "exposure_rate_to_spy",
+    "underperformed_qqq",
+    "materially_improved_drawdown",
+)
+
+QQQ_DEFENSIVE_TIMING_VALIDATION_WALK_FORWARD_SUMMARY_COLUMNS: tuple[str, ...] = (
+    "window_group",
+    "window_length_years",
+    "window_count",
+    "average_strategy_vs_qqq",
+    "median_strategy_vs_qqq",
+    "positive_vs_qqq_window_rate",
+    "qqq_underperformance_rate",
+    "average_drawdown_improvement_vs_qqq",
+    "median_drawdown_improvement_vs_qqq",
+    "drawdown_improvement_window_rate",
+    "average_return_to_drawdown_delta",
+    "worst_strategy_vs_qqq_window",
+    "worst_strategy_vs_qqq",
+    "worst_drawdown_window",
+    "worst_strategy_max_drawdown",
+    "average_transaction_count",
+)
 
 _SMA_PRICE_FILTER_FAMILIES = {
     "sma_price_filter_to_cash",
@@ -1237,6 +1304,431 @@ def available_symbol_summary(
     return required_present, required_missing, optional_present, optional_missing
 
 
+def discover_qqq_spy_price_coverage(
+    market_data: pd.DataFrame,
+    *,
+    required_symbols: Sequence[str] = REQUIRED_SYMBOLS,
+) -> dict[str, object]:
+    """Discover local adjusted close coverage for the required QQQ/SPY pair.
+
+    The input is the normalized local market data shape used by the Tiingo-only
+    research CLIs. Coverage is based on non-null ``close`` rows only.
+    """
+
+    missing_columns = {"date", "symbol", "close"}.difference(market_data.columns)
+    if missing_columns:
+        missing = ", ".join(sorted(missing_columns))
+        raise ValueError(f"Market data is missing required coverage columns: {missing}")
+
+    symbols = tuple(symbol.upper() for symbol in required_symbols)
+    if len(symbols) != 2:
+        raise ValueError("QQQ defensive timing coverage discovery expects exactly two symbols.")
+
+    frame = market_data.loc[:, ["date", "symbol", "close"]].copy()
+    frame["date"] = pd.to_datetime(frame["date"])
+    frame["symbol"] = frame["symbol"].astype("string").str.upper()
+    frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+    frame = frame.loc[frame["symbol"].isin(symbols) & frame["close"].notna()]
+
+    symbol_ranges: dict[str, tuple[pd.Timestamp, pd.Timestamp, int]] = {}
+    for symbol in symbols:
+        symbol_dates = frame.loc[frame["symbol"].eq(symbol), "date"].dropna().sort_values()
+        if symbol_dates.empty:
+            raise ValueError(f"Missing adjusted price coverage for required symbol {symbol}.")
+        symbol_ranges[symbol] = (
+            pd.Timestamp(symbol_dates.iloc[0]).normalize(),
+            pd.Timestamp(symbol_dates.iloc[-1]).normalize(),
+            int(symbol_dates.nunique()),
+        )
+
+    common_start = max(symbol_ranges[symbol][0] for symbol in symbols)
+    common_end = min(symbol_ranges[symbol][1] for symbol in symbols)
+    if common_start > common_end:
+        raise ValueError(
+            "Required QQQ/SPY symbols do not have overlapping adjusted price coverage."
+        )
+
+    prices = (
+        frame.loc[frame["date"].between(common_start, common_end)]
+        .pivot_table(index="date", columns="symbol", values="close", aggfunc="first")
+        .sort_index(kind="mergesort")
+        .rename_axis(columns=None)
+    )
+    prices = prices.dropna(subset=list(symbols))
+    if prices.empty:
+        raise ValueError("No common QQQ/SPY trading days remain after coverage alignment.")
+
+    primary, secondary = symbols
+    return {
+        f"{primary.lower()}_first_date": _date_string(symbol_ranges[primary][0]),
+        f"{primary.lower()}_last_date": _date_string(symbol_ranges[primary][1]),
+        f"{secondary.lower()}_first_date": _date_string(symbol_ranges[secondary][0]),
+        f"{secondary.lower()}_last_date": _date_string(symbol_ranges[secondary][1]),
+        "common_start_date": _date_string(prices.index.min()),
+        "common_end_date": _date_string(prices.index.max()),
+        "trading_days": int(len(prices)),
+        f"{primary.lower()}_trading_days": symbol_ranges[primary][2],
+        f"{secondary.lower()}_trading_days": symbol_ranges[secondary][2],
+    }
+
+
+def select_qqq_spy_common_validation_window(
+    coverage: dict[str, object] | pd.Series,
+    *,
+    requested_start_date: str | pd.Timestamp = "auto",
+    requested_end_date: str | pd.Timestamp = "2026-05-15",
+) -> dict[str, object]:
+    """Resolve the validation window from coverage and requested bounds."""
+
+    common_start = pd.Timestamp(_coverage_value(coverage, "common_start_date")).normalize()
+    common_end = pd.Timestamp(_coverage_value(coverage, "common_end_date")).normalize()
+    if common_start > common_end:
+        raise ValueError("common_start_date must be earlier than or equal to common_end_date.")
+
+    start_is_auto = str(requested_start_date).lower() == "auto"
+    end_is_auto = str(requested_end_date).lower() == "auto"
+    requested_start = common_start if start_is_auto else pd.Timestamp(requested_start_date)
+    requested_end = common_end if end_is_auto else pd.Timestamp(requested_end_date)
+    requested_start = requested_start.normalize()
+    requested_end = requested_end.normalize()
+
+    start = common_start if start_is_auto else max(requested_start, common_start)
+    end = common_end if end_is_auto else min(requested_end, common_end)
+    if start > end:
+        raise ValueError(
+            "Requested validation dates do not overlap the common QQQ/SPY coverage window."
+        )
+
+    baseline_start = pd.Timestamp(QQQ_DEFENSIVE_TIMING_VALIDATION_BASELINE_START)
+    longer_history_available = bool(common_start < baseline_start)
+    notes: list[str] = []
+    if start_is_auto:
+        if longer_history_available:
+            notes.append(
+                "Longer local QQQ/SPY history is available; validation starts at the "
+                "earliest common Tiingo coverage date."
+            )
+        else:
+            notes.append(
+                "Longer-history validation is limited by local Tiingo QQQ/SPY coverage; "
+                "validation starts at the earliest common local date."
+            )
+    elif requested_start < common_start:
+        notes.append("Requested start date was earlier than common local coverage.")
+    elif requested_start > common_start:
+        notes.append("Requested start date intentionally truncates available local coverage.")
+
+    if not end_is_auto and requested_end > common_end:
+        notes.append("Requested end date was later than common local coverage.")
+    elif not end_is_auto and requested_end < common_end:
+        notes.append("Requested end date intentionally truncates available local coverage.")
+
+    return {
+        "requested_start_date": str(requested_start_date),
+        "requested_end_date": str(requested_end_date),
+        "start_date": _date_string(start),
+        "end_date": _date_string(end),
+        "common_start_date": _date_string(common_start),
+        "common_end_date": _date_string(common_end),
+        "longer_history_available": longer_history_available,
+        "start_date_source": "auto_common_start" if start_is_auto else "requested_or_coverage",
+        "end_date_source": "auto_common_end" if end_is_auto else "requested_or_coverage",
+        "coverage_note": " ".join(notes),
+    }
+
+
+def generate_qqq_defensive_timing_validation_windows(
+    trading_dates: Sequence[pd.Timestamp] | pd.DatetimeIndex,
+    *,
+    start_date: str | pd.Timestamp | None = None,
+    end_date: str | pd.Timestamp | None = None,
+    window_specs: Sequence[tuple[int, int]] = QQQ_DEFENSIVE_TIMING_VALIDATION_WINDOW_SPECS,
+) -> pd.DataFrame:
+    """Generate fixed-parameter rolling evaluation windows for validation."""
+
+    dates = pd.DatetimeIndex(pd.to_datetime(list(trading_dates))).sort_values()
+    dates = pd.DatetimeIndex(dates.dropna().unique()).sort_values()
+    if len(dates) == 0:
+        return pd.DataFrame(columns=QQQ_DEFENSIVE_TIMING_VALIDATION_WINDOW_COLUMNS)
+
+    start = dates[0] if start_date is None else pd.Timestamp(start_date).normalize()
+    end = dates[-1] if end_date is None else pd.Timestamp(end_date).normalize()
+    dates = dates[(dates >= start) & (dates <= end)]
+    if len(dates) == 0:
+        return pd.DataFrame(columns=QQQ_DEFENSIVE_TIMING_VALIDATION_WINDOW_COLUMNS)
+
+    rows: list[dict[str, object]] = []
+    data_start = pd.Timestamp(dates[0]).normalize()
+    data_end = pd.Timestamp(dates[-1]).normalize()
+    for window_length_years, step_months in window_specs:
+        if window_length_years < 1 or step_months < 1:
+            raise ValueError("Validation window years and step months must be positive.")
+
+        nominal_start = data_start
+        window_index = 1
+        while True:
+            nominal_end = (
+                nominal_start
+                + pd.DateOffset(years=int(window_length_years))
+                - pd.Timedelta(days=1)
+            )
+            if nominal_end > data_end:
+                break
+
+            window_dates = dates[(dates >= nominal_start) & (dates <= nominal_end)]
+            if len(window_dates) > 0:
+                actual_start = pd.Timestamp(window_dates[0]).normalize()
+                actual_end = pd.Timestamp(window_dates[-1]).normalize()
+                rows.append(
+                    {
+                        "window_label": (
+                            f"{int(window_length_years)}y_"
+                            f"{actual_start.strftime('%Y%m%d')}_"
+                            f"{actual_end.strftime('%Y%m%d')}"
+                        ),
+                        "window_length_years": int(window_length_years),
+                        "step_months": int(step_months),
+                        "window_index": int(window_index),
+                        "nominal_start_date": _date_string(nominal_start),
+                        "nominal_end_date": _date_string(nominal_end),
+                        "start_date": _date_string(actual_start),
+                        "end_date": _date_string(actual_end),
+                        "trading_days": int(len(window_dates)),
+                    }
+                )
+                window_index += 1
+            nominal_start = nominal_start + pd.DateOffset(months=int(step_months))
+
+    return pd.DataFrame(rows, columns=QQQ_DEFENSIVE_TIMING_VALIDATION_WINDOW_COLUMNS)
+
+
+def default_qqq_defensive_timing_validation_subperiods(
+    *,
+    start_date: str | pd.Timestamp,
+    end_date: str | pd.Timestamp,
+) -> tuple[tuple[str, str, str], ...]:
+    """Return named validation subperiods covered by the selected window."""
+
+    start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
+    candidates: list[tuple[str, pd.Timestamp, pd.Timestamp]] = []
+
+    if start <= pd.Timestamp("2019-12-31") <= end:
+        candidates.append(("pre_covid_bull", start, pd.Timestamp("2019-12-31")))
+    if start <= pd.Timestamp("2010-01-01") and end >= pd.Timestamp("2019-12-31"):
+        candidates.append(
+            ("post_gfc_bull", pd.Timestamp("2010-01-01"), pd.Timestamp("2019-12-31"))
+        )
+    if start <= pd.Timestamp("2000-03-10") and end >= pd.Timestamp("2002-10-09"):
+        candidates.append(
+            ("dotcom_bear", pd.Timestamp("2000-03-10"), pd.Timestamp("2002-10-09"))
+        )
+
+    candidates.extend(
+        (name, pd.Timestamp(period_start), pd.Timestamp(period_end))
+        for name, period_start, period_end in DEFENSIVE_TIMING_SUBPERIODS
+        if name != "full"
+    )
+
+    covered: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for name, period_start, period_end in candidates:
+        if name in seen:
+            continue
+        if period_start >= start and period_end <= end:
+            covered.append((name, _date_string(period_start), _date_string(period_end)))
+            seen.add(name)
+    return tuple(covered)
+
+
+def calculate_qqq_defensive_timing_validation_window_results(
+    *,
+    daily_equity: pd.DataFrame,
+    prices: pd.DataFrame,
+    windows: pd.DataFrame,
+    selected_strategy_name: str = SELECTED_QQQ_DEFENSIVE_TIMING_STRATEGY_NAME,
+) -> pd.DataFrame:
+    """Calculate selected-candidate metrics for pre-generated validation windows."""
+
+    if daily_equity.empty or windows.empty:
+        return pd.DataFrame(columns=QQQ_DEFENSIVE_TIMING_VALIDATION_WALK_FORWARD_COLUMNS)
+
+    _validate_price_symbols(prices, REQUIRED_SYMBOLS)
+    price_frame = prices.copy()
+    price_frame.index = pd.to_datetime(price_frame.index)
+    daily = daily_equity.copy()
+    daily["date"] = pd.to_datetime(daily["date"])
+    daily = daily.loc[daily["strategy_name"].astype(str).eq(selected_strategy_name)].copy()
+    if daily.empty:
+        return pd.DataFrame(columns=QQQ_DEFENSIVE_TIMING_VALIDATION_WALK_FORWARD_COLUMNS)
+
+    rows: list[dict[str, object]] = []
+    for window in windows.itertuples(index=False):
+        start = pd.Timestamp(window.start_date).normalize()
+        end = pd.Timestamp(window.end_date).normalize()
+        period_daily = daily.loc[daily["date"].between(start, end)]
+        period_prices = price_frame.loc[price_frame.index.to_series().between(start, end)]
+        if period_daily.empty or period_prices.empty:
+            continue
+
+        metrics = _defensive_validation_period_metrics(
+            period_daily=period_daily,
+            period_prices=period_prices,
+        )
+        rows.append(
+            {
+                "strategy_name": selected_strategy_name,
+                "window_label": window.window_label,
+                "window_length_years": int(window.window_length_years),
+                "step_months": int(window.step_months),
+                "window_index": int(window.window_index),
+                "start_date": _date_string(start),
+                "end_date": _date_string(end),
+                "trading_days": int(window.trading_days),
+                **metrics,
+                "underperformed_qqq": metrics["strategy_vs_qqq"] < 0.0,
+                "materially_improved_drawdown": (
+                    metrics["drawdown_improvement_vs_qqq"] >= MATERIAL_DRAWDOWN_IMPROVEMENT
+                ),
+            }
+        )
+
+    return pd.DataFrame(rows, columns=QQQ_DEFENSIVE_TIMING_VALIDATION_WALK_FORWARD_COLUMNS)
+
+
+def calculate_qqq_defensive_timing_walk_forward_summary(
+    walk_forward_windows: pd.DataFrame,
+) -> pd.DataFrame:
+    """Aggregate rolling validation windows by horizon and overall."""
+
+    if walk_forward_windows.empty:
+        return pd.DataFrame(
+            columns=QQQ_DEFENSIVE_TIMING_VALIDATION_WALK_FORWARD_SUMMARY_COLUMNS
+        )
+
+    windows = walk_forward_windows.copy()
+    groups: list[tuple[str, float, pd.DataFrame]] = [("all", np.nan, windows)]
+    for window_length_years, group in windows.groupby("window_length_years", sort=True):
+        groups.append((f"{int(window_length_years)}y", float(window_length_years), group))
+
+    rows = [
+        _walk_forward_summary_row(
+            window_group=window_group,
+            window_length_years=window_length_years,
+            group=group,
+        )
+        for window_group, window_length_years, group in groups
+    ]
+    return pd.DataFrame(
+        rows,
+        columns=QQQ_DEFENSIVE_TIMING_VALIDATION_WALK_FORWARD_SUMMARY_COLUMNS,
+    )
+
+
+def _date_string(value: object) -> str:
+    return str(pd.Timestamp(value).date())
+
+
+def _coverage_value(coverage: dict[str, object] | pd.Series, key: str) -> object:
+    if isinstance(coverage, pd.Series):
+        return coverage[key]
+    return coverage[key]
+
+
+def _defensive_validation_period_metrics(
+    *,
+    period_daily: pd.DataFrame,
+    period_prices: pd.DataFrame,
+) -> dict[str, object]:
+    returns = pd.to_numeric(period_daily["daily_return"], errors="coerce").fillna(0.0).copy()
+    if not returns.empty:
+        returns.iloc[0] = 0.0
+    equity = (1.0 + returns).cumprod()
+    total_return = float(equity.iloc[-1] - 1.0) if not equity.empty else np.nan
+    max_drawdown = calculate_max_drawdown(equity) if not equity.empty else np.nan
+
+    qqq_daily = pd.to_numeric(period_prices["QQQ"], errors="coerce").pct_change().fillna(0.0)
+    spy_daily = pd.to_numeric(period_prices["SPY"], errors="coerce").pct_change().fillna(0.0)
+    qqq_equity = (1.0 + qqq_daily).cumprod()
+    spy_equity = (1.0 + spy_daily).cumprod()
+    qqq_total_return = float(qqq_equity.iloc[-1] - 1.0) if not qqq_equity.empty else np.nan
+    spy_total_return = float(spy_equity.iloc[-1] - 1.0) if not spy_equity.empty else np.nan
+    qqq_max_drawdown = calculate_max_drawdown(qqq_equity) if not qqq_equity.empty else np.nan
+    spy_max_drawdown = calculate_max_drawdown(spy_equity) if not spy_equity.empty else np.nan
+    active_asset = period_daily["active_asset"].astype(str)
+    return_to_drawdown = _return_to_drawdown(total_return, max_drawdown)
+    qqq_return_to_drawdown = _return_to_drawdown(qqq_total_return, qqq_max_drawdown)
+
+    return {
+        "strategy_total_return": total_return,
+        "qqq_total_return": qqq_total_return,
+        "spy_total_return": spy_total_return,
+        "strategy_vs_qqq": total_return - qqq_total_return,
+        "strategy_vs_spy": total_return - spy_total_return,
+        "strategy_max_drawdown": max_drawdown,
+        "qqq_max_drawdown": qqq_max_drawdown,
+        "spy_max_drawdown": spy_max_drawdown,
+        "drawdown_improvement_vs_qqq": max_drawdown - qqq_max_drawdown,
+        "return_to_drawdown": return_to_drawdown,
+        "qqq_return_to_drawdown": qqq_return_to_drawdown,
+        "return_to_drawdown_delta": return_to_drawdown - qqq_return_to_drawdown,
+        "transaction_count": int(active_asset.ne(active_asset.shift(1)).iloc[1:].sum()),
+        "exposure_rate_to_qqq": float(active_asset.eq("QQQ").mean()),
+        "exposure_rate_to_spy": float(active_asset.eq("SPY").mean()),
+    }
+
+
+def _walk_forward_summary_row(
+    *,
+    window_group: str,
+    window_length_years: float,
+    group: pd.DataFrame,
+) -> dict[str, object]:
+    strategy_vs_qqq = pd.to_numeric(group["strategy_vs_qqq"], errors="coerce")
+    drawdown_improvement = pd.to_numeric(
+        group["drawdown_improvement_vs_qqq"],
+        errors="coerce",
+    )
+    return_to_drawdown_delta = pd.to_numeric(
+        group["return_to_drawdown_delta"],
+        errors="coerce",
+    )
+    transaction_count = pd.to_numeric(group["transaction_count"], errors="coerce")
+    strategy_drawdown = pd.to_numeric(group["strategy_max_drawdown"], errors="coerce")
+
+    worst_strategy_vs_qqq = (
+        group.loc[strategy_vs_qqq.idxmin()] if strategy_vs_qqq.notna().any() else {}
+    )
+    worst_drawdown = (
+        group.loc[strategy_drawdown.idxmin()] if strategy_drawdown.notna().any() else {}
+    )
+
+    return {
+        "window_group": window_group,
+        "window_length_years": window_length_years,
+        "window_count": int(len(group)),
+        "average_strategy_vs_qqq": float(strategy_vs_qqq.mean()),
+        "median_strategy_vs_qqq": float(strategy_vs_qqq.median()),
+        "positive_vs_qqq_window_rate": float((strategy_vs_qqq > 0.0).mean()),
+        "qqq_underperformance_rate": float((strategy_vs_qqq < 0.0).mean()),
+        "average_drawdown_improvement_vs_qqq": float(drawdown_improvement.mean()),
+        "median_drawdown_improvement_vs_qqq": float(drawdown_improvement.median()),
+        "drawdown_improvement_window_rate": float((drawdown_improvement > 0.0).mean()),
+        "average_return_to_drawdown_delta": float(return_to_drawdown_delta.mean()),
+        "worst_strategy_vs_qqq_window": (
+            str(worst_strategy_vs_qqq.get("window_label", ""))
+            if len(worst_strategy_vs_qqq)
+            else ""
+        ),
+        "worst_strategy_vs_qqq": float(strategy_vs_qqq.min()),
+        "worst_drawdown_window": (
+            str(worst_drawdown.get("window_label", "")) if len(worst_drawdown) else ""
+        ),
+        "worst_strategy_max_drawdown": float(strategy_drawdown.min()),
+        "average_transaction_count": float(transaction_count.mean()),
+    }
+
+
 def _optional_risk_off_spec(
     *,
     available_symbols: set[str] | None,
@@ -1967,6 +2459,10 @@ __all__ = [
     "QQQDefensiveTimingSweepResult",
     "QQQTimingStrategySpec",
     "QQQTimingStudyResult",
+    "QQQ_DEFENSIVE_TIMING_VALIDATION_WALK_FORWARD_COLUMNS",
+    "QQQ_DEFENSIVE_TIMING_VALIDATION_WALK_FORWARD_SUMMARY_COLUMNS",
+    "QQQ_DEFENSIVE_TIMING_VALIDATION_WINDOW_COLUMNS",
+    "QQQ_DEFENSIVE_TIMING_VALIDATION_WINDOW_SPECS",
     "REQUIRED_SYMBOLS",
     "RESULT_COLUMNS",
     "SELECTED_QQQ_DEFENSIVE_TIMING_STRATEGY_NAME",
@@ -1976,10 +2472,15 @@ __all__ = [
     "build_qqq_timing_indicators",
     "build_qqq_timing_signal",
     "calculate_qqq_defensive_timing_subperiod_results",
+    "calculate_qqq_defensive_timing_validation_window_results",
+    "calculate_qqq_defensive_timing_walk_forward_summary",
     "default_qqq_defensive_timing_narrow_sweep_specs",
     "default_qqq_defensive_timing_selected_replay_spec",
     "default_qqq_defensive_timing_sweep_specs",
+    "default_qqq_defensive_timing_validation_subperiods",
     "default_qqq_timing_strategy_specs",
+    "discover_qqq_spy_price_coverage",
+    "generate_qqq_defensive_timing_validation_windows",
     "prepare_qqq_timing_prices",
     "run_qqq_defensive_timing_narrow_sweep",
     "run_qqq_defensive_timing_selected_replay",
@@ -1987,4 +2488,5 @@ __all__ = [
     "run_qqq_defensive_timing_sweep",
     "run_qqq_timing_strategy",
     "run_qqq_timing_study",
+    "select_qqq_spy_common_validation_window",
 ]
