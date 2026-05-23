@@ -36,3 +36,4 @@ scripts/*_with_progress.sh
 !scripts/run_tiingo_qqq_defensive_timing_sweep.sh
 !scripts/run_tiingo_qqq_defensive_timing_narrow_sweep.sh
 !scripts/run_tiingo_qqq_defensive_timing_validation.sh
+!scripts/run_long_history_qqq_shortlist_validation.sh
