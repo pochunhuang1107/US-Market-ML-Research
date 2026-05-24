@@ -60,6 +60,24 @@ This bootstrap includes only the project foundation:
 - A local daily model signal export, healthcheck CLI, and operator runbook for
   validating runtime-safe signal artifacts before platform ingestion.
 
+## Current Research State
+
+The latest source-of-truth research note is
+[`docs/current_state.md`](docs/current_state.md). As of the completed
+long-history QQQ-relative core-sleeve cycle, the selected rows are research
+winners for tracking only, not production candidates. QQQ remains the primary
+benchmark. SPY is used as the core sleeve asset inside selected portfolios, not
+as the primary benchmark.
+
+Primary tracking candidates are `candidate_0001` with 35% SPY core / 65%
+candidate sleeve and `candidate_0003` with 25% SPY core / 75% candidate sleeve,
+both using `candidate_rebalance_aligned_weights`. Secondary tracking references
+are the 40% SPY / 60% sleeve variants of the same candidates. Standalone
+`candidate_0001` remains a raw return reference only, and standalone
+`candidate_0003` remains a signal-review reference only. `production_ready` is
+`false` for all candidates; do not promote to production, create production
+signal exports, or run another broad model zoo from this state.
+
 ## Not Included Yet
 
 The following are intentionally not implemented in this task:
