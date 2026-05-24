@@ -38,3 +38,4 @@ scripts/*_with_progress.sh
 !scripts/run_tiingo_qqq_defensive_timing_validation.sh
 !scripts/run_long_history_qqq_shortlist_validation.sh
 !scripts/run_long_history_qqq_candidate_deep_dive.sh
+!scripts/run_long_history_qqq_concentration_control_sweep.sh
