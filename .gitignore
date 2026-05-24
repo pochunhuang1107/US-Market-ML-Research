@@ -40,3 +40,4 @@ scripts/*_with_progress.sh
 !scripts/run_long_history_qqq_candidate_deep_dive.sh
 !scripts/run_long_history_qqq_concentration_control_sweep.sh
 !scripts/run_long_history_qqq_spy_core_sleeve.sh
+!scripts/run_long_history_qqq_core_sleeve_refinement.sh
