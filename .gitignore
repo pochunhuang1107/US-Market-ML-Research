@@ -43,3 +43,5 @@ scripts/*_with_progress.sh
 !scripts/run_long_history_qqq_core_sleeve_refinement.sh
 !scripts/create_long_history_qqq_core_sleeve_tracking_report.sh
 !scripts/run_qqq_only_cross_market_timing_model_zoo.sh
+!scripts/run_qqq_only_rf_second_confirmation.sh
+!scripts/create_qqq_only_rf_signal_review.sh
