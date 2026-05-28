@@ -267,7 +267,11 @@ class QQQOnlyRunSpec:
     switch_margin: float
     is_baseline: bool = False
     baseline_rule: str | None = None
+    rebalance_weekday: str = "FRI"
     random_state: int = 42
+    n_estimators: int = 60
+    max_depth: int | None = None
+    min_samples_leaf: int = 5
 
 
 @dataclass(frozen=True)
@@ -799,6 +803,11 @@ def run_qqq_only_spec(
             spec.target_name,
             spec.feature_set_name,
             spec.rebalance_frequency,
+            spec.rebalance_weekday,
+            spec.random_state,
+            spec.n_estimators,
+            spec.max_depth,
+            spec.min_samples_leaf,
             str(pd.Timestamp(start_date).date()),
             str(pd.Timestamp(end_date).date()),
         )
@@ -904,6 +913,7 @@ def walk_forward_predictions(
         start_date=start_date,
         end_date=end_date,
         frequency=spec.rebalance_frequency,
+        weekday=spec.rebalance_weekday,
     )
     if len(rebalance_dates) == 0:
         raise SkippedQQQOnlyRun("No rebalance dates were available.")
@@ -1139,6 +1149,7 @@ def rebalance_dates_for_frequency(
     start_date: str | pd.Timestamp,
     end_date: str | pd.Timestamp,
     frequency: str,
+    weekday: str | None = None,
 ) -> pd.DatetimeIndex:
     """Return QQQ trading dates used as same-date signal calculation points."""
 
@@ -1146,14 +1157,49 @@ def rebalance_dates_for_frequency(
     if len(eval_dates) == 0:
         return pd.DatetimeIndex([])
     if frequency == "weekly":
-        periods = eval_dates.to_period("W-FRI")
+        selected = _weekly_rebalance_dates(eval_dates, weekday=weekday)
     elif frequency == "monthly":
         periods = eval_dates.to_period("M")
+        selected = pd.Series(eval_dates, index=eval_dates).groupby(periods).max()
     else:
         raise ValueError(f"Unsupported rebalance_frequency: {frequency!r}")
-    selected = pd.Series(eval_dates, index=eval_dates).groupby(periods).max()
     values = pd.DatetimeIndex([eval_dates[0], *selected.tolist()]).unique().sort_values()
     return values[(values >= eval_dates[0]) & (values <= eval_dates[-1])]
+
+
+def _weekly_rebalance_dates(
+    eval_dates: pd.DatetimeIndex,
+    *,
+    weekday: str | None = None,
+) -> pd.Series:
+    """Return one trading date per week, optionally anchored to a weekday."""
+
+    weekday_lookup = {
+        "MON": 0,
+        "TUE": 1,
+        "WED": 2,
+        "THU": 3,
+        "FRI": 4,
+    }
+    target = weekday_lookup.get(str(weekday or "FRI").upper())
+    periods = eval_dates.to_period("W-FRI")
+    grouped = pd.Series(eval_dates, index=eval_dates).groupby(periods)
+    if target is None or target == 4:
+        return grouped.max()
+
+    selected: list[pd.Timestamp] = []
+    for _, group in grouped:
+        week_dates = pd.DatetimeIndex(group.tolist()).sort_values()
+        exact = week_dates[week_dates.weekday == target]
+        if len(exact) > 0:
+            selected.append(pd.Timestamp(exact[0]))
+            continue
+        after = week_dates[week_dates.weekday > target]
+        if len(after) > 0:
+            selected.append(pd.Timestamp(after[0]))
+            continue
+        selected.append(pd.Timestamp(week_dates[-1]))
+    return pd.Series(selected, index=grouped.size().index)
 
 
 def classify_qqq_only_decision(row: pd.Series | dict[str, object]) -> str:
@@ -1477,6 +1523,11 @@ def _model_spec(
     threshold: float,
     min_holding_days: int,
     switch_margin: float,
+    rebalance_weekday: str = "FRI",
+    random_state: int = 42,
+    n_estimators: int = 60,
+    max_depth: int | None = None,
+    min_samples_leaf: int = 5,
 ) -> QQQOnlyRunSpec:
     horizon = _target_horizon(target_name)
     payload = {
@@ -1491,10 +1542,28 @@ def _model_spec(
         "min_holding_days": min_holding_days,
         "switch_margin": switch_margin,
     }
+    if str(rebalance_weekday).upper() != "FRI":
+        payload["rebalance_weekday"] = str(rebalance_weekday).upper()
+    if int(random_state) != 42:
+        payload["random_state"] = int(random_state)
+    if int(n_estimators) != 60:
+        payload["n_estimators"] = int(n_estimators)
+    if max_depth is not None:
+        payload["max_depth"] = int(max_depth)
+    if int(min_samples_leaf) != 5:
+        payload["min_samples_leaf"] = int(min_samples_leaf)
     run_key = _run_key(payload)
+    suffix = ""
+    if str(rebalance_weekday).upper() != "FRI":
+        suffix += f"_{str(rebalance_weekday).upper().lower()}"
+    if int(random_state) != 42:
+        suffix += f"_seed{int(random_state)}"
+    if int(n_estimators) != 60 or max_depth is not None or int(min_samples_leaf) != 5:
+        depth_label = "none" if max_depth is None else str(int(max_depth))
+        suffix += f"_trees{int(n_estimators)}_depth{depth_label}_leaf{int(min_samples_leaf)}"
     strategy_name = (
         f"{model_type}_{training_mode}_{target_name}_{feature_set_name}_"
-        f"{exposure_mode}_{rebalance_frequency}_cost{transaction_cost_bps:g}"
+        f"{exposure_mode}_{rebalance_frequency}{suffix}_cost{transaction_cost_bps:g}"
     )
     return QQQOnlyRunSpec(
         run_key=run_key,
@@ -1511,6 +1580,11 @@ def _model_spec(
         threshold=float(threshold),
         min_holding_days=int(min_holding_days),
         switch_margin=float(switch_margin),
+        rebalance_weekday=str(rebalance_weekday).upper(),
+        random_state=int(random_state),
+        n_estimators=int(n_estimators),
+        max_depth=None if max_depth is None else int(max_depth),
+        min_samples_leaf=int(min_samples_leaf),
     )
 
 
@@ -1792,8 +1866,9 @@ def _fit_predict_score(
             model = LogisticRegression(max_iter=1000, class_weight="balanced")
         elif spec.model_type == "random_forest":
             model = RandomForestClassifier(
-                n_estimators=60,
-                min_samples_leaf=5,
+                n_estimators=spec.n_estimators,
+                max_depth=spec.max_depth,
+                min_samples_leaf=spec.min_samples_leaf,
                 random_state=spec.random_state,
                 n_jobs=1,
             )
@@ -1844,8 +1919,9 @@ def _fit_predict_score(
         regressor = Lasso(alpha=0.001, random_state=spec.random_state, max_iter=10000)
     elif spec.model_type == "random_forest":
         regressor = RandomForestRegressor(
-            n_estimators=60,
-            min_samples_leaf=5,
+            n_estimators=spec.n_estimators,
+            max_depth=spec.max_depth,
+            min_samples_leaf=spec.min_samples_leaf,
             random_state=spec.random_state,
             n_jobs=1,
         )
