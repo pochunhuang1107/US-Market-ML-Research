@@ -47,6 +47,8 @@ us-market-ml-allocation-study-report = "us_market_ml.cli.run_allocation_study_re
 us-market-ml-tiingo-selected-candidate-rich-replay = "us_market_ml.cli.run_tiingo_selected_candidate_rich_replay:run_tiingo_selected_candidate_rich_replay_from_args"
 us-market-ml-tiingo-selected-candidate-rich-replay-report = "us_market_ml.cli.create_tiingo_selected_candidate_rich_replay_report:run_tiingo_selected_candidate_rich_replay_report_from_args"
 us-market-ml-qqq-only-cross-market-timing-model-zoo = "us_market_ml.cli.run_qqq_only_cross_market_timing_model_zoo:run_qqq_only_cross_market_timing_model_zoo_from_args"
+us-market-ml-qqq-only-rf-confirmation = "us_market_ml.cli.run_qqq_only_rf_confirmation:run_qqq_only_rf_confirmation_from_args"
+us-market-ml-qqq-only-rf-confirmation-report = "us_market_ml.cli.create_qqq_only_rf_confirmation_report:create_qqq_only_rf_confirmation_report_from_args"
 
 [project.optional-dependencies]
 dev = [
