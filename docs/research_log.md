@@ -1,5 +1,29 @@
 # Research Log
 
+## 2026-05-29: QQQ-Only RF Paper-Tracking Update Workflow
+
+Added a lightweight research-only update workflow for the locked QQQ-only RF
+paper-tracking rows.
+
+Workflow:
+
+- Reads the locked package registry from
+  `artifacts/reports/qqq_only_rf_paper_tracking`.
+- Reruns only the three locked QQQ/cash candidates.
+- Compares the latest snapshot against prior update history, falling back to
+  the initial package signal.
+- Writes update signal, summary, history, decision matrix, report, and optional
+  charts under `artifacts/reports/qqq_only_rf_paper_tracking_updates`.
+
+Guardrails remain unchanged:
+
+- No production signal export.
+- No model card.
+- No writes under `artifacts/model_signals`.
+- No broad sweep or confirmation rerun.
+- QQQ/cash only.
+- `production_ready = false` for every row.
+
 ## 2026-05-29: QQQ-Only RF Paper-Tracking Package
 
 The main research path is now QQQ-only random-forest timing. The out-of-time

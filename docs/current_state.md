@@ -27,6 +27,10 @@ reference inputs; they are not holdings.
   `artifacts/reports/qqq_only_rf_paper_tracking/qqq_only_rf_paper_tracking_candidate_registry.csv`
 - Paper-tracking initial signal snapshot:
   `artifacts/reports/qqq_only_rf_paper_tracking/qqq_only_rf_paper_tracking_initial_signal.csv`
+- Paper-tracking update workflow:
+  `scripts/update_qqq_only_rf_paper_tracking.sh`
+- Paper-tracking update output directory:
+  `artifacts/reports/qqq_only_rf_paper_tracking_updates`
 
 ## Locked Paper-Tracking Registry
 
@@ -72,7 +76,8 @@ primary paper-tracking candidate.
 
 ## Recommended Next Work
 
-- Start research paper-tracking for `primary_rf_threshold_050`.
+- Rerun the lightweight research-only paper-tracking update workflow
+  periodically for `primary_rf_threshold_050`.
 - Keep `secondary_rf_threshold_045_hold10` as a secondary reference.
 - Monitor QQQ-relative returns, drawdowns, raw score behavior, exposure flips,
   and turnover against QQQ buy-and-hold.

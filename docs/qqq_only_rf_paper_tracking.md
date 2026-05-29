@@ -40,6 +40,38 @@ Required charts:
 - `qqq_only_rf_paper_tracking_exposure_timeline.png`
 - `qqq_only_rf_paper_tracking_holdout_comparison.png`
 
+## Update Workflow
+
+Default update command:
+
+`bash scripts/update_qqq_only_rf_paper_tracking.sh`
+
+Default update output directory:
+
+`artifacts/reports/qqq_only_rf_paper_tracking_updates`
+
+The update workflow reads the locked package registry from
+`artifacts/reports/qqq_only_rf_paper_tracking`, recomputes only the three locked
+QQQ/cash RF rows, compares the latest signal snapshot with the prior update
+history or initial package signal, and updates a local history CSV.
+
+Required update files:
+
+- `qqq_only_rf_paper_tracking_update_signal.csv`
+- `qqq_only_rf_paper_tracking_update_signal.json`
+- `qqq_only_rf_paper_tracking_update_summary.csv`
+- `qqq_only_rf_paper_tracking_update_history.csv`
+- `qqq_only_rf_paper_tracking_update_decision_matrix.csv`
+- `qqq_only_rf_paper_tracking_update_report.md`
+
+Optional update charts:
+
+- `qqq_only_rf_paper_tracking_update_exposure_snapshot.png`
+- `qqq_only_rf_paper_tracking_update_signal_history.png`
+
+Update decision labels are `maintain_tracking`, `exposure_change_watch`,
+`data_missing`, and `guardrail_failed`.
+
 ## Guardrails
 
 - Research-only.
