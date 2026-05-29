@@ -1,5 +1,37 @@
 # Research Log
 
+## 2026-05-29: QQQ-Only RF Paper-Tracking Package
+
+The main research path is now QQQ-only random-forest timing. The out-of-time
+confirmation changed the ranking and selected the threshold 0.50,
+min_holding_days 0 row as the primary research paper-tracking candidate.
+
+Current source of truth:
+
+- `docs/current_state.md`
+- `docs/qqq_only_rf_paper_tracking.md`
+- `artifacts/reports/qqq_only_rf_out_of_time_confirmation/qqq_only_rf_out_of_time_confirmation_decision_matrix.csv`
+- `artifacts/reports/qqq_only_rf_paper_tracking/qqq_only_rf_paper_tracking_report.md`
+
+Decision:
+
+- Primary paper-tracking candidate: `primary_rf_threshold_050`.
+- Secondary reference: `secondary_rf_threshold_045_hold10`.
+- Deprioritized reference: `rejected_rf_threshold_045_hold0`.
+- QQQ buy-and-hold remains the primary benchmark.
+- Tradable holdings are QQQ/cash only.
+- Other ETFs and reference series are features only.
+- `production_ready = false` for every row.
+
+Next work:
+
+- Start research paper-tracking for threshold 0.50.
+- Keep threshold 0.45 with min_holding_days 10 as a secondary reference.
+- Do not promote to production.
+- Do not create a production signal export.
+- Do not create a model card.
+- Do not run another broad sweep yet.
+
 ## 2026-05-23: Long-History QQQ-Relative Core-Sleeve Cycle Complete
 
 The long-history QQQ-relative model zoo, shortlist validation, candidate deep
