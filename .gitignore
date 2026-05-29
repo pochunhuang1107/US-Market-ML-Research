@@ -46,3 +46,4 @@ scripts/*_with_progress.sh
 !scripts/run_qqq_only_rf_second_confirmation.sh
 !scripts/run_qqq_only_rf_out_of_time_confirmation.sh
 !scripts/create_qqq_only_rf_signal_review.sh
+!scripts/create_qqq_only_rf_paper_tracking_package.sh
