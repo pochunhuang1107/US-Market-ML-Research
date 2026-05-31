@@ -1,5 +1,25 @@
 # Research Log
 
+## 2026-05-31: QQQ-Only RF Paper-Tracking Operator Wrapper
+
+Added a single-command research-only operator wrapper:
+
+`bash scripts/check_qqq_only_rf_paper_tracking.sh`
+
+The wrapper auto-detects the latest local QQQ price date from the Tiingo-only
+ETF parquet files, passes that date as `END_DATE` to the existing
+`scripts/update_qqq_only_rf_paper_tracking.sh` workflow, and prints a compact
+summary table plus one primary action for `primary_rf_threshold_050`.
+
+Guardrails remain unchanged:
+
+- No production signal export.
+- No model card.
+- No writes under `artifacts/model_signals`.
+- No broad sweep.
+- QQQ/cash only.
+- `production_ready = false` for every row.
+
 ## 2026-05-29: QQQ-Only RF Paper-Tracking Update Workflow
 
 Added a lightweight research-only update workflow for the locked QQQ-only RF

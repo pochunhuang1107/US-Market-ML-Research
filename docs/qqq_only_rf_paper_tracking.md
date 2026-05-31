@@ -46,6 +46,15 @@ Default update command:
 
 `bash scripts/update_qqq_only_rf_paper_tracking.sh`
 
+Daily operator check command:
+
+`bash scripts/check_qqq_only_rf_paper_tracking.sh`
+
+The operator wrapper auto-detects the latest local QQQ price date from
+`/Users/casper/Projects/Research/Market Data/data/research/etf_daily_prices_tiingo_only/**/*.parquet`,
+passes that date as `END_DATE` to the existing update workflow, and prints a
+compact summary with the primary action for `primary_rf_threshold_050`.
+
 Default update output directory:
 
 `artifacts/reports/qqq_only_rf_paper_tracking_updates`
