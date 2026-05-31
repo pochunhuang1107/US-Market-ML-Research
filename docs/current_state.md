@@ -1,6 +1,6 @@
 # Current State: QQQ-Only RF Timing Research Paper-Tracking
 
-Last updated: 2026-05-29
+Last updated: 2026-05-31
 
 ## Executive Summary
 
@@ -29,6 +29,8 @@ reference inputs; they are not holdings.
   `artifacts/reports/qqq_only_rf_paper_tracking/qqq_only_rf_paper_tracking_initial_signal.csv`
 - Paper-tracking update workflow:
   `scripts/update_qqq_only_rf_paper_tracking.sh`
+- Paper-tracking operator check wrapper:
+  `scripts/check_qqq_only_rf_paper_tracking.sh`
 - Paper-tracking update output directory:
   `artifacts/reports/qqq_only_rf_paper_tracking_updates`
 
@@ -77,7 +79,8 @@ primary paper-tracking candidate.
 ## Recommended Next Work
 
 - Rerun the lightweight research-only paper-tracking update workflow
-  periodically for `primary_rf_threshold_050`.
+  periodically for `primary_rf_threshold_050` with
+  `bash scripts/check_qqq_only_rf_paper_tracking.sh`.
 - Keep `secondary_rf_threshold_045_hold10` as a secondary reference.
 - Monitor QQQ-relative returns, drawdowns, raw score behavior, exposure flips,
   and turnover against QQQ buy-and-hold.
